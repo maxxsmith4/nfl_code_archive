@@ -35,10 +35,10 @@ Locked V1:
     models/nfl_circa_contest_model_v1.joblib
 
 Ceiling production model:
-    models/nfl_circa_contest_season_phase_v3_1.joblib
+    models/nfl_circa_contest_season_phase_v3_2.joblib
 
-If the V3.1 bundle is unavailable, the runner automatically checks the V3.2
-bundle and extracts its unchanged A1000/W1/BLENDED_SIGN ceiling source.
+The repaired V3.2 QB-integrity bundle is required; older ceiling bundles are
+not accepted.
 
 Outputs
 -------
@@ -67,11 +67,11 @@ CSV snapshots:
 
 The confidence score is an advisory selection-robustness score, not a cover
 probability. The immutable model card remains separate from the editable
-manual-submission draft. The market-independent STRUCTURAL_FORM_HFA fair line
-is also joined as a confidence-only overlay. A contradiction of at least 1.5
-points against within-card residual-strength ranks 4-5 raises manual-review
-priority; it never changes either production card or invents a numeric score
-penalty.
+manual-submission draft. The market-independent learned structural/nonlinear
+consensus fair line is joined as a confidence-only overlay. A contradiction of
+at least 1.5 points against within-card residual-strength ranks 4-5 raises
+manual-review priority; it never changes either production card or invents a
+numeric score penalty.
 
 No sportsbook stake is recommended by this script.
 """
@@ -103,7 +103,7 @@ import pandas as pd
 
 SEASON = 2026
 BUILD_ID = "NFL_CIRCA_TOP5_2026_PRODUCTION_CONFIDENCE_BOARD"
-VERSION = "v8_3_structural_lineage_live_feature_freshness"
+VERSION = "v8_4_learned_consensus_lineage_live_feature_freshness"
 
 DEFAULT_PROJECT_ROOT = Path(
     r"C:\Users\maxxs\Downloads\Football Files\nfl_model"
@@ -163,7 +163,7 @@ LATE_HOME_FAVORITE_VETO_MIN_MARGIN = 7.5
 ADJUSTED_V1_POLICY = "TB_V1_P37_D050"
 CEILING_POLICY = "CEILING_LATE_HOME_FAVORITE_7P5_VETO"
 CONFIDENCE_METHODOLOGY = (
-    "SELECTION_ROBUSTNESS_PLUS_STRUCTURAL_REVIEW_OVERLAY_NOT_COVER_PROBABILITY_V2"
+    "SELECTION_ROBUSTNESS_PLUS_LEARNED_CONSENSUS_REVIEW_OVERLAY_NOT_COVER_PROBABILITY_V3"
 )
 CONFIDENCE_WEIGHTS = {
     "boundary_separation": 0.35,
@@ -174,12 +174,24 @@ CONFIDENCE_WEIGHTS = {
 }
 STRUCTURAL_LIVE_TABLE = "nfl_weekly_power_spread_predictions_2026"
 STRUCTURAL_RUN_AUDIT_TABLE = "nfl_weekly_power_spread_run_audit_2026"
-STRUCTURAL_MODEL_VARIANT = "STRUCTURAL_FORM_HFA"
+STRUCTURAL_MODEL_VARIANT = "LEARNED_STRUCTURAL_NONLINEAR_CONSENSUS"
 EXPECTED_STRUCTURAL_BUILD_ID = (
-    "NFL_WEEKLY_POWER_SPREADS_2026_CANONICAL_V4"
+    "NFL_WEEKLY_LEARNED_CONSENSUS_2026_CANONICAL_V1"
 )
 EXPECTED_STRUCTURAL_VERSION = (
-    "v4_structural_form_hfa_fail_closed_lineage"
+    "v1_3_readable_execution_csv_scope_fix"
+)
+EXPECTED_LEARNED_BUNDLE_BUILD_ID = (
+    "NFL_LEARNED_CONSENSUS_2026_CANONICAL_V1"
+)
+EXPECTED_LEARNED_BUNDLE_VERSION = (
+    "v1_0_2020_2025_frozen_market_free_consensus"
+)
+EXPECTED_LEARNED_BUNDLE_SHA256 = (
+    "5c298a2ef0555612525df2fcc0341d4bbb0c19be5dd6226089f2511f9fcbe524"
+)
+EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH = (
+    "8ece49f9674a90e368743feac3eb15f0b88b23e648fc878ecbee0d0cd508b49f"
 )
 EXPECTED_FORM_BUILD_ID = "NFL_2026_FORM_RATING_CANONICAL_V3"
 EXPECTED_FORM_VERSION = (
@@ -251,8 +263,8 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=STRUCTURAL_LIVE_TABLE,
         help=(
-            "Current market-independent STRUCTURAL_FORM_HFA weekly "
-            "projection table used only by the confidence overlay."
+            "Current market-independent learned structural/nonlinear "
+            "consensus table used only by the confidence overlay."
         ),
     )
     parser.add_argument("--week", type=int, required=False)
@@ -543,6 +555,12 @@ def prepare_structural_confidence_projection(
     as_of_date: pd.Timestamp,
     expected_games: pd.DataFrame,
 ) -> pd.DataFrame:
+    """Validate the learned consensus used only for confidence review.
+
+    Existing ``structural_*`` output names remain as compatibility aliases.
+    They now carry the learned structural/nonlinear consensus fair margin and
+    lineage; the legacy STRUCTURAL_FORM_HFA projection is explicitly rejected.
+    """
     frame = raw.copy()
     required = {
         "run_id",
@@ -568,8 +586,21 @@ def prepare_structural_confidence_projection(
         "structural_power_version",
         "structural_power_date_imported",
         "structural_power_snapshot_hash",
+        "home_rating_through_week",
+        "away_rating_through_week",
+        "unit_projection",
+        "slot_projection",
+        "nonlinear_projection",
+        "consensus_projection",
+        "projection_range",
+        "model_agreement_count",
+        "legacy_additive_components_used_in_final_projection",
+        "learned_bundle_build_id",
+        "learned_bundle_version",
+        "learned_bundle_sha256",
+        "learned_structural_snapshot_hash",
     }
-    require_columns(frame, required, "Structural confidence source")
+    require_columns(frame, required, "Learned-consensus confidence source")
     frame["season"] = numeric(frame, "season")
     frame["week"] = numeric(frame, "week")
     frame["home_team"] = frame["home_team"].map(normalize_team)
@@ -587,13 +618,14 @@ def prepare_structural_confidence_projection(
     ].copy()
     if frame.empty:
         raise RuntimeError(
-            "No current STRUCTURAL_FORM_HFA rows match the requested week."
+            "No current LEARNED_STRUCTURAL_NONLINEAR_CONSENSUS rows match "
+            "the requested week. Run the learned weekly model first."
         )
     if not numeric(
         frame, "prediction_uses_market_inputs", 1
     ).fillna(1).eq(0).all():
         raise RuntimeError(
-            "Structural confidence source contains a projection that used "
+            "Learned-consensus confidence source contains a projection that used "
             "market inputs or lacks affirmative market-independence evidence."
         )
 
@@ -604,23 +636,108 @@ def prepare_structural_confidence_projection(
         "form_build_id": EXPECTED_FORM_BUILD_ID,
         "form_version": EXPECTED_FORM_VERSION,
         "structural_power_build_id": EXPECTED_STRUCTURAL_POWER_BUILD_ID,
+        "learned_bundle_build_id": EXPECTED_LEARNED_BUNDLE_BUILD_ID,
+        "learned_bundle_version": EXPECTED_LEARNED_BUNDLE_VERSION,
+        "learned_bundle_sha256": EXPECTED_LEARNED_BUNDLE_SHA256,
+        "learned_structural_snapshot_hash": (
+            EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH
+        ),
     }
     for column, expected_value in exact_values.items():
         found = one_required_text(
-            frame, column, "Structural confidence source"
+            frame, column, "Learned-consensus confidence source"
         )
         if found != expected_value:
             raise RuntimeError(
-                f"Structural lineage mismatch for {column}: "
+                f"Learned-consensus lineage mismatch for {column}: "
                 f"expected={expected_value!r}, found={found!r}."
             )
 
     expected_through_week = max(0, int(week) - 1)
+    for cutoff_column in (
+        "home_rating_through_week",
+        "away_rating_through_week",
+    ):
+        cutoff_values = numeric(frame, cutoff_column).dropna().unique()
+        if (
+            len(cutoff_values) != 1
+            or int(cutoff_values[0]) != expected_through_week
+        ):
+            raise RuntimeError(
+                f"Learned-consensus {cutoff_column} mismatch: "
+                f"expected={expected_through_week}, found={cutoff_values}."
+            )
     through = numeric(frame, "form_through_week").dropna().unique()
     if len(through) != 1 or int(through[0]) != expected_through_week:
         raise RuntimeError(
-            "Structural form through-week mismatch: "
+            "Learned-consensus form through-week mismatch: "
             f"expected={expected_through_week}, found={through}."
+        )
+
+    projection_columns = (
+        "structural_home_margin",
+        "unit_projection",
+        "slot_projection",
+        "nonlinear_projection",
+        "consensus_projection",
+        "projection_range",
+        "model_agreement_count",
+    )
+    for column in projection_columns:
+        frame[column] = numeric(frame, column)
+    if frame[list(projection_columns)].isna().any().any():
+        raise RuntimeError(
+            "Learned-consensus confidence source contains a missing model projection."
+        )
+    reconciled_consensus = frame[
+        ["unit_projection", "nonlinear_projection"]
+    ].mean(axis=1)
+    if not np.allclose(
+        frame["structural_home_margin"],
+        reconciled_consensus,
+        atol=1e-10,
+        rtol=0.0,
+    ) or not np.allclose(
+        frame["consensus_projection"],
+        reconciled_consensus,
+        atol=1e-10,
+        rtol=0.0,
+    ):
+        raise RuntimeError(
+            "Learned-consensus fair margin does not reconcile to the frozen "
+            "unit/nonlinear ensemble mean."
+        )
+    reconciled_range = (
+        frame[["unit_projection", "slot_projection", "nonlinear_projection"]]
+        .max(axis=1)
+        - frame[["unit_projection", "slot_projection", "nonlinear_projection"]]
+        .min(axis=1)
+    )
+    if not np.allclose(
+        frame["projection_range"],
+        reconciled_range,
+        atol=1e-10,
+        rtol=0.0,
+    ):
+        raise RuntimeError(
+            "Learned-consensus projection range does not reconcile to the "
+            "three component projections."
+        )
+    if not frame["model_agreement_count"].between(0, 3).all() or not np.allclose(
+        frame["model_agreement_count"],
+        np.round(frame["model_agreement_count"]),
+        atol=1e-10,
+        rtol=0.0,
+    ):
+        raise RuntimeError(
+            "Learned-consensus model_agreement_count must be an integer from 0 to 3."
+        )
+    if not numeric(
+        frame, "legacy_additive_components_used_in_final_projection", 1
+    ).fillna(1).eq(0).all():
+        raise RuntimeError(
+            "Legacy additive structural components were marked as used in "
+            "the learned consensus fair margin."
         )
     for column in ("prediction_as_of_date", "form_as_of_date"):
         dates = pd.to_datetime(frame[column], errors="coerce").dt.normalize()
@@ -630,17 +747,17 @@ def prepare_structural_confidence_projection(
                 for value in dates.dropna().unique()
             )
             raise RuntimeError(
-                f"Structural {column} mismatch: expected="
+                f"Learned-consensus {column} mismatch: expected="
                 f"{as_of_date.date().isoformat()}, found={found}."
             )
     timestamps = pd.to_datetime(
         frame["prediction_timestamp"], errors="coerce"
     )
     if timestamps.isna().any():
-        raise RuntimeError("Structural prediction timestamp is missing.")
+        raise RuntimeError("Learned-consensus prediction timestamp is missing.")
     if (timestamps.dt.normalize() != as_of_date).any():
         raise RuntimeError(
-            "Structural prediction was not generated on the requested "
+            "Learned-consensus prediction was not generated on the requested "
             "as-of date."
         )
 
@@ -650,10 +767,10 @@ def prepare_structural_confidence_projection(
             frame.duplicated(keys, keep=False), keys + ["run_id"]
         ]
         raise RuntimeError(
-            "Structural confidence source contains duplicate current-week "
+            "Learned-consensus confidence source contains duplicate current-week "
             "rows:\n" + duplicates.head(20).to_string(index=False)
         )
-    run_id = one_required_text(frame, "run_id", "Structural source")
+    run_id = one_required_text(frame, "run_id", "Learned-consensus source")
     for column in (
         "independent_projection_hash",
         "form_date_imported",
@@ -666,8 +783,14 @@ def prepare_structural_confidence_projection(
             str
         ).str.strip().eq("").any():
             raise RuntimeError(
-                f"Structural lineage field {column} is missing."
+                f"Learned-consensus lineage field {column} is missing."
             )
+    if not frame["independent_projection_hash"].astype(str).str.fullmatch(
+        r"[0-9a-f]{64}"
+    ).all():
+        raise RuntimeError(
+            "Learned-consensus independent projection hash is not valid lowercase SHA-256."
+        )
 
     require_columns(
         run_audit,
@@ -680,13 +803,16 @@ def prepare_structural_confidence_projection(
             "structural_power_build_id", "structural_power_version",
             "structural_power_date_imported",
             "structural_power_snapshot_hash", "completed_at",
+            "learned_bundle_build_id", "learned_bundle_version",
+            "learned_bundle_sha256", "learned_structural_snapshot_hash",
+            "data_through_week",
         },
-        "Structural run audit",
+        "Learned-consensus run audit",
     )
     audit = run_audit[run_audit["run_id"].astype(str).eq(run_id)].copy()
     if len(audit) != 1:
         raise RuntimeError(
-            "Structural current rows do not match exactly one run-audit row: "
+            "Learned-consensus current rows do not match exactly one run-audit row: "
             f"run_id={run_id!r}, audit_rows={len(audit)}."
         )
     audit_row = audit.iloc[0]
@@ -702,12 +828,19 @@ def prepare_structural_confidence_projection(
         "form_version": EXPECTED_FORM_VERSION,
         "form_through_week": expected_through_week,
         "structural_power_build_id": EXPECTED_STRUCTURAL_POWER_BUILD_ID,
+        "learned_bundle_build_id": EXPECTED_LEARNED_BUNDLE_BUILD_ID,
+        "learned_bundle_version": EXPECTED_LEARNED_BUNDLE_VERSION,
+        "learned_bundle_sha256": EXPECTED_LEARNED_BUNDLE_SHA256,
+        "learned_structural_snapshot_hash": (
+            EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH
+        ),
+        "data_through_week": expected_through_week,
     }
     for column, expected_value in audit_expected.items():
         actual = audit_row[column]
         if str(actual) != str(expected_value):
             raise RuntimeError(
-                f"Structural run-audit mismatch for {column}: "
+                f"Learned-consensus run-audit mismatch for {column}: "
                 f"expected={expected_value!r}, found={actual!r}."
             )
     audit_form_date = pd.to_datetime(
@@ -723,7 +856,7 @@ def prepare_structural_confidence_projection(
         or pd.Timestamp(audit_completed_at).normalize() != as_of_date
     ):
         raise RuntimeError(
-            "Structural run-audit is not fresh for the requested as-of date."
+            "Learned-consensus run-audit is not fresh for the requested as-of date."
         )
     row_to_audit_fields = {
         "form_date_imported": "form_date_imported",
@@ -732,28 +865,34 @@ def prepare_structural_confidence_projection(
         "structural_power_date_imported": (
             "structural_power_date_imported"
         ),
+        "learned_bundle_build_id": "learned_bundle_build_id",
+        "learned_bundle_version": "learned_bundle_version",
+        "learned_bundle_sha256": "learned_bundle_sha256",
+        "learned_structural_snapshot_hash": (
+            "learned_structural_snapshot_hash"
+        ),
     }
     for row_column, audit_column in row_to_audit_fields.items():
         row_value = one_required_text(
-            frame, row_column, "Structural confidence source"
+            frame, row_column, "Learned-consensus confidence source"
         )
         if str(audit_row[audit_column]) != row_value:
             raise RuntimeError(
-                "Structural row/run-audit lineage mismatch for "
+                "Learned-consensus row/run-audit lineage mismatch for "
                 f"{row_column}."
             )
     if int(float(audit_row["games"])) != len(frame):
         raise RuntimeError(
-            "Structural run-audit game count does not reconcile to current "
+            "Learned-consensus run-audit game count does not reconcile to current "
             "prediction rows."
         )
     if str(audit_row["structural_power_snapshot_hash"]) != one_required_text(
         frame,
         "structural_power_snapshot_hash",
-        "Structural confidence source",
+        "Learned-consensus confidence source",
     ):
         raise RuntimeError(
-            "Structural run-audit snapshot hash does not match its rows."
+            "Learned-consensus run-audit power snapshot hash does not match its rows."
         )
 
     expected = expected_games[["home_team", "away_team"]].copy()
@@ -781,6 +920,19 @@ def prepare_structural_confidence_projection(
         "structural_power_version",
         "structural_power_date_imported",
         "structural_power_snapshot_hash",
+        "home_rating_through_week",
+        "away_rating_through_week",
+        "unit_projection",
+        "slot_projection",
+        "nonlinear_projection",
+        "consensus_projection",
+        "projection_range",
+        "model_agreement_count",
+        "legacy_additive_components_used_in_final_projection",
+        "learned_bundle_build_id",
+        "learned_bundle_version",
+        "learned_bundle_sha256",
+        "learned_structural_snapshot_hash",
     ]
     matched = expected.merge(
         frame[lineage_columns],
@@ -791,7 +943,7 @@ def prepare_structural_confidence_projection(
     missing = matched[matched["structural_home_margin"].isna()]
     if not missing.empty:
         raise RuntimeError(
-            "Current-week STRUCTURAL_FORM_HFA fair lines are missing for "
+            "Current-week learned-consensus fair lines are missing for "
             "Circa matchups:\n" + missing.to_string(index=False)
         )
     matched["season"] = SEASON
@@ -813,9 +965,9 @@ def load_structural_confidence_projection(
         run_audit = read_table(connection, STRUCTURAL_RUN_AUDIT_TABLE)
     if raw.empty:
         raise RuntimeError(
-            "Production confidence requires the current structural table "
+            "Production confidence requires the current learned-consensus table "
             f"{args.db_path}::{args.structural_table}. Run the weekly "
-            "STRUCTURAL_FORM_HFA projection step first."
+            "learned consensus projection step first."
         )
     return (
         prepare_structural_confidence_projection(
@@ -2531,7 +2683,7 @@ def build_confidence_board(
     structural_projection: pd.DataFrame,
     structural_source: str,
 ) -> pd.DataFrame:
-    """Rank picks by robustness plus a non-substitutive structural review flag."""
+    """Rank picks by robustness plus a non-substitutive learned-consensus review."""
     require_columns(
         structural_projection,
         {
@@ -2540,7 +2692,7 @@ def build_confidence_board(
             "structural_home_margin",
             "model_variant",
         },
-        "Structural confidence projection",
+        "Learned-consensus confidence projection",
     )
     structural_lookup = structural_projection.set_index(
         ["home_team", "away_team"]
@@ -2641,7 +2793,7 @@ def build_confidence_board(
                 structural_row = structural_lookup.loc[structural_key]
             except KeyError as error:
                 raise RuntimeError(
-                    "Structural fair line is missing for selected game "
+                    "Learned-consensus fair line is missing for selected game "
                     f"{game_id}: {row['away_team']} at {row['home_team']}."
                 ) from error
             if isinstance(structural_row, pd.DataFrame):
@@ -2669,17 +2821,19 @@ def build_confidence_board(
             )
             if structural_review_flag:
                 structural_review_label = (
-                    "STRUCTURAL_CONTRADICTION_REVIEW"
+                    "LEARNED_CONSENSUS_CONTRADICTION_REVIEW"
                 )
             elif not structural_review_eligible:
                 structural_review_label = (
-                    "TOP_THREE_NOT_STRUCTURAL_REVIEW_ELIGIBLE"
+                    "TOP_THREE_NOT_CONSENSUS_REVIEW_ELIGIBLE"
                 )
             elif structural_confirmation_points > 0.0:
-                structural_review_label = "STRUCTURAL_CONFIRMS_SELECTED_SIDE"
+                structural_review_label = (
+                    "LEARNED_CONSENSUS_CONFIRMS_SELECTED_SIDE"
+                )
             else:
                 structural_review_label = (
-                    "NO_STRONG_STRUCTURAL_CONTRADICTION"
+                    "NO_STRONG_LEARNED_CONSENSUS_CONTRADICTION"
                 )
 
             if specification["entry_number"] == 1:
@@ -2736,7 +2890,9 @@ def build_confidence_board(
             if near_veto:
                 fragility.append("NEAR_7P5_HOME_FAVORITE_VETO")
             if structural_review_flag:
-                fragility.append("STRUCTURAL_HFA_CONTRADICTION_GE_1P5")
+                fragility.append(
+                    "LEARNED_CONSENSUS_CONTRADICTION_GE_1P5"
+                )
             base_tier = confidence_tier(confidence_score)
             rows.append(
                 {
@@ -2836,6 +2992,47 @@ def build_confidence_board(
                         structural_row[
                             "structural_power_snapshot_hash"
                         ]
+                    ),
+                    "structural_home_rating_through_week": int(
+                        structural_row["home_rating_through_week"]
+                    ),
+                    "structural_away_rating_through_week": int(
+                        structural_row["away_rating_through_week"]
+                    ),
+                    "structural_unit_projection": float(
+                        structural_row["unit_projection"]
+                    ),
+                    "structural_slot_projection": float(
+                        structural_row["slot_projection"]
+                    ),
+                    "structural_nonlinear_projection": float(
+                        structural_row["nonlinear_projection"]
+                    ),
+                    "structural_consensus_projection": float(
+                        structural_row["consensus_projection"]
+                    ),
+                    "structural_projection_range": float(
+                        structural_row["projection_range"]
+                    ),
+                    "structural_model_agreement_count": int(
+                        structural_row["model_agreement_count"]
+                    ),
+                    "structural_legacy_additive_components_used": int(
+                        structural_row[
+                            "legacy_additive_components_used_in_final_projection"
+                        ]
+                    ),
+                    "structural_learned_bundle_build_id": str(
+                        structural_row["learned_bundle_build_id"]
+                    ),
+                    "structural_learned_bundle_version": str(
+                        structural_row["learned_bundle_version"]
+                    ),
+                    "structural_learned_bundle_sha256": str(
+                        structural_row["learned_bundle_sha256"]
+                    ),
+                    "structural_learned_snapshot_hash": str(
+                        structural_row["learned_structural_snapshot_hash"]
                     ),
                     "structural_home_margin": round(
                         structural_home_margin, 4
@@ -2944,7 +3141,7 @@ def build_confidence_board(
     board.loc[
         structural_review & ~board["confidence_tier"].eq("D_FIRST_REPLACEMENT"),
         "confidence_tier",
-    ] = "C_STRUCTURAL_REVIEW"
+    ] = "C_LEARNED_CONSENSUS_REVIEW"
     if not historical_analogs.empty:
         board = board.merge(
             historical_analogs,
@@ -2973,10 +3170,12 @@ def build_confidence_board(
         )
     ).any():
         raise RuntimeError(
-            "Structural review escaped the bottom-two production gate."
+            "Learned-consensus review escaped the bottom-two production gate."
         )
     if not board["structural_used_to_change_model_card"].eq(0).all():
-        raise RuntimeError("Structural review was allowed to alter a model card.")
+        raise RuntimeError(
+            "Learned-consensus review was allowed to alter a model card."
+        )
     return board.sort_values(
         ["entry_number", "confidence_rank"]
     ).reset_index(drop=True)
@@ -3023,6 +3222,19 @@ def add_confidence_to_portfolio(
         "structural_power_version",
         "structural_power_date_imported",
         "structural_power_snapshot_hash",
+        "structural_home_rating_through_week",
+        "structural_away_rating_through_week",
+        "structural_unit_projection",
+        "structural_slot_projection",
+        "structural_nonlinear_projection",
+        "structural_consensus_projection",
+        "structural_projection_range",
+        "structural_model_agreement_count",
+        "structural_legacy_additive_components_used",
+        "structural_learned_bundle_build_id",
+        "structural_learned_bundle_version",
+        "structural_learned_bundle_sha256",
+        "structural_learned_snapshot_hash",
         "structural_home_margin",
         "structural_gap_vs_circa",
         "structural_confirmation_points",
@@ -3649,6 +3861,20 @@ def run_self_test() -> int:
     structural_raw["structural_power_snapshot_hash"] = (
         "SELF_TEST_STRUCTURAL_POWER_HASH"
     )
+    structural_raw["home_rating_through_week"] = 9
+    structural_raw["away_rating_through_week"] = 9
+    structural_raw["learned_bundle_build_id"] = (
+        EXPECTED_LEARNED_BUNDLE_BUILD_ID
+    )
+    structural_raw["learned_bundle_version"] = (
+        EXPECTED_LEARNED_BUNDLE_VERSION
+    )
+    structural_raw["learned_bundle_sha256"] = (
+        EXPECTED_LEARNED_BUNDLE_SHA256
+    )
+    structural_raw["learned_structural_snapshot_hash"] = (
+        EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH
+    )
     v1_low_confidence = (
         v1_card[v1_card["contest_rank"].le(5)]
         .sort_values(
@@ -3666,6 +3892,18 @@ def run_self_test() -> int:
         structural_raw.loc[mask, "projected_home_margin"] = (
             -2.0 * selected_direction
         )
+    for column in (
+        "unit_projection",
+        "slot_projection",
+        "nonlinear_projection",
+        "consensus_projection",
+    ):
+        structural_raw[column] = structural_raw["projected_home_margin"]
+    structural_raw["projection_range"] = 0.0
+    structural_raw["model_agreement_count"] = 3
+    structural_raw[
+        "legacy_additive_components_used_in_final_projection"
+    ] = 0
     structural_run_audit = pd.DataFrame(
         [
             {
@@ -3694,6 +3932,17 @@ def run_self_test() -> int:
                 "structural_power_snapshot_hash": (
                     "SELF_TEST_STRUCTURAL_POWER_HASH"
                 ),
+                "learned_bundle_build_id": (
+                    EXPECTED_LEARNED_BUNDLE_BUILD_ID
+                ),
+                "learned_bundle_version": (
+                    EXPECTED_LEARNED_BUNDLE_VERSION
+                ),
+                "learned_bundle_sha256": EXPECTED_LEARNED_BUNDLE_SHA256,
+                "learned_structural_snapshot_hash": (
+                    EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH
+                ),
+                "data_through_week": 9,
                 "completed_at": "2026-08-24T00:00:01",
             }
         ]
@@ -3705,6 +3954,25 @@ def run_self_test() -> int:
         as_of_date=structural_as_of_date,
         expected_games=matrix,
     )
+    legacy_structural_raw = structural_raw.copy()
+    legacy_structural_raw["model_variant"] = "STRUCTURAL_FORM_HFA"
+    legacy_structural_raw["build_id"] = (
+        "NFL_WEEKLY_POWER_SPREADS_2026_CANONICAL_V4"
+    )
+    try:
+        prepare_structural_confidence_projection(
+            legacy_structural_raw,
+            structural_run_audit,
+            week=10,
+            as_of_date=structural_as_of_date,
+            expected_games=matrix,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(
+            "Legacy STRUCTURAL_FORM_HFA confidence source was not rejected."
+        )
     confidence_board = build_confidence_board(
         v1_card,
         ceiling_card,
@@ -3712,7 +3980,7 @@ def run_self_test() -> int:
         pd.DataFrame(),
         "UNAVAILABLE",
         structural_projection,
-        "SELF_TEST_STRUCTURAL_SOURCE",
+        "SELF_TEST_LEARNED_CONSENSUS_SOURCE",
     )
     portfolio = add_confidence_to_portfolio(portfolio, confidence_board)
     manual_draft = build_manual_submission_draft(portfolio)
@@ -3738,16 +4006,24 @@ def run_self_test() -> int:
     if not confidence_board["confidence_score"].eq(
         confidence_board["base_confidence_score"]
     ).all():
-        raise AssertionError("Structural review changed a numeric confidence score.")
+        raise AssertionError(
+            "Learned-consensus review changed a numeric confidence score."
+        )
     if confidence_board["structural_review_flag"].sum() < 1:
-        raise AssertionError("Structural confidence fixture produced no review flag.")
+        raise AssertionError(
+            "Learned-consensus confidence fixture produced no review flag."
+        )
     if (
         confidence_board["structural_review_flag"].eq(1)
         & confidence_board["production_raw_confidence_rank"].lt(4)
     ).any():
-        raise AssertionError("Structural review escaped the bottom-two gate.")
+        raise AssertionError(
+            "Learned-consensus review escaped the bottom-two gate."
+        )
     if not confidence_board["structural_used_to_change_model_card"].eq(0).all():
-        raise AssertionError("Structural review was labeled as a pick changer.")
+        raise AssertionError(
+            "Learned-consensus review was labeled as a pick changer."
+        )
     persisted_model_selections = portfolio[
         ["entry_number", "contest_rank", "game_id", "selected_team"]
     ]
@@ -3988,7 +4264,7 @@ def main() -> int:
         column: one_required_text(
             structural_projection,
             column,
-            "Validated structural projection",
+            "Validated learned-consensus projection",
         )
         for column in (
             "run_id",
@@ -4005,6 +4281,10 @@ def main() -> int:
             "structural_power_version",
             "structural_power_date_imported",
             "structural_power_snapshot_hash",
+            "learned_bundle_build_id",
+            "learned_bundle_version",
+            "learned_bundle_sha256",
+            "learned_structural_snapshot_hash",
         )
     }
     historical_analogs, historical_analog_source = (
@@ -4052,18 +4332,18 @@ def main() -> int:
         f"seasons={sorted(margin_history['season'].unique().tolist())}"
     )
     print(
-        f"[CIRCA_TOP5] Structural confidence source: {structural_source} | "
+        f"[CIRCA_TOP5] Learned-consensus confidence source: {structural_source} | "
         f"variant={STRUCTURAL_MODEL_VARIANT} | "
         f"games={len(structural_projection)}"
     )
     print(
-        "[CIRCA_TOP5] Structural review overlay: within-card residual-strength "
+        "[CIRCA_TOP5] Learned-consensus review overlay: within-card residual-strength "
         f"ranks {STRUCTURAL_LOW_CONFIDENCE_RANK_MIN}-5 only | "
         f"contradiction >= {STRUCTURAL_REVIEW_THRESHOLD_POINTS:g} points | "
         "weekly flag cap=NONE"
     )
     print(
-        "[CIRCA_TOP5] Structural projection substituted for residual "
+        "[CIRCA_TOP5] Learned-consensus projection substituted for residual "
         "features or model picks: NO"
     )
     print("[CIRCA_TOP5] Entry 1 residual predictions influenced by Entry 2: NO")
@@ -4355,6 +4635,18 @@ def main() -> int:
                 ],
                 "structural_power_snapshot_hash": structural_lineage[
                     "structural_power_snapshot_hash"
+                ],
+                "structural_learned_bundle_build_id": structural_lineage[
+                    "learned_bundle_build_id"
+                ],
+                "structural_learned_bundle_version": structural_lineage[
+                    "learned_bundle_version"
+                ],
+                "structural_learned_bundle_sha256": structural_lineage[
+                    "learned_bundle_sha256"
+                ],
+                "structural_learned_snapshot_hash": structural_lineage[
+                    "learned_structural_snapshot_hash"
                 ],
                 "structural_projection_rows": len(structural_projection),
                 "structural_all_current_games_matched": 1,

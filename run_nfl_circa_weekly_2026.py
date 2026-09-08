@@ -8,7 +8,7 @@ production predictor unless every scheduled game for the requested week has a
 valid reconciled contest spread.
 
 After prediction, a fail-closed weekly certificate independently verifies the
-2026 source-game capture, prior-week cutoff, form, structural projection,
+2026 source-game capture, prior-week cutoff, form, learned-consensus projection,
 authoritative QB/OL inputs, frozen model lineage, and both five-pick entries.
 The certificate is saved as JSON and appended to two audit tables.  ``--audit-only``
 rechecks an already-generated week without fetching a PDF or rerunning models.
@@ -43,7 +43,7 @@ import pandas as pd
 
 
 BUILD_ID = "NFL_CIRCA_WEEKLY_2026_CANONICAL_V1"
-VERSION = "v1_1_fail_closed_weekly_data_integrity_certificate"
+VERSION = "v1_2_learned_consensus_confidence_certificate"
 SEASON = 2026
 SEASON_ROMAN = "VIII"
 
@@ -59,6 +59,9 @@ PREDICTOR_FILENAME = "predict_nfl_circa_top5_2026.py"
 EXPECTED_HISTORICAL_BUILD = "NFL_CIRCA_CONTEST_LINES_CANONICAL_V1"
 EXPECTED_HISTORICAL_VERSION = "v1_5_qb_identity_integrity_guard"
 EXPECTED_PREDICTOR_BUILD = "NFL_CIRCA_TOP5_2026_PRODUCTION_CONFIDENCE_BOARD"
+EXPECTED_PREDICTOR_VERSION = (
+    "v8_4_learned_consensus_lineage_live_feature_freshness"
+)
 
 FORM_TABLE = "nfl_2026_form_ratings"
 POWER_TABLE = "nfl_power_ratings_2026"
@@ -80,10 +83,24 @@ INTEGRITY_RUN_TABLE = "nfl_circa_weekly_integrity_runs_2026"
 INTEGRITY_DETAIL_TABLE = "nfl_circa_weekly_integrity_details_2026"
 ENTRY_1_POLICY = "TB_V1_P37_D050"
 ENTRY_2_POLICY = "CEILING_LATE_HOME_FAVORITE_7P5_VETO"
-EXPECTED_FORM_BUILD = "NFL_2026_FORM_RATING_CANONICAL_V2"
+EXPECTED_FORM_BUILD = "NFL_2026_FORM_RATING_CANONICAL_V3"
 EXPECTED_POWER_BUILD = "NFL_POWER_RATINGS_2026_CANONICAL_V2"
 EXPECTED_DEPTH_BUILD = "NFL_PROJECTED_DEPTH_CHART_2026_CANONICAL_V5"
-EXPECTED_STRUCTURAL_BUILD = "NFL_WEEKLY_POWER_SPREADS_2026_CANONICAL_V3"
+EXPECTED_STRUCTURAL_BUILD = "NFL_WEEKLY_LEARNED_CONSENSUS_2026_CANONICAL_V1"
+EXPECTED_STRUCTURAL_VERSION = "v1_3_readable_execution_csv_scope_fix"
+EXPECTED_STRUCTURAL_MODEL_VARIANT = (
+    "LEARNED_STRUCTURAL_NONLINEAR_CONSENSUS"
+)
+EXPECTED_LEARNED_BUNDLE_BUILD = "NFL_LEARNED_CONSENSUS_2026_CANONICAL_V1"
+EXPECTED_LEARNED_BUNDLE_VERSION = (
+    "v1_0_2020_2025_frozen_market_free_consensus"
+)
+EXPECTED_LEARNED_BUNDLE_SHA256 = (
+    "5c298a2ef0555612525df2fcc0341d4bbb0c19be5dd6226089f2511f9fcbe524"
+)
+EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH = (
+    "8ece49f9674a90e368743feac3eb15f0b88b23e648fc878ecbee0d0cd508b49f"
+)
 EXPECTED_V1_MODEL_BUILD = "NFL_CIRCA_CONTEST_LINES_CANONICAL_V1"
 EXPECTED_V1_MODEL_VERSION = "v1_5_qb_identity_integrity_guard"
 EXPECTED_CEILING_MODEL_BUILD = "NFL_CIRCA_CONTEST_SEASON_PHASE_V3_2_QB_REBUILT"
@@ -208,6 +225,8 @@ def json_value(value: Any) -> Any:
     """Convert pandas/numpy/path values into stable JSON-safe values."""
     if isinstance(value, Path):
         return str(value)
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating,)):
@@ -329,6 +348,11 @@ def verify_predictor(path: Path) -> tuple[str, str]:
         raise RuntimeError(
             f"Production predictor BUILD_ID is {build_id!r}; expected "
             f"{EXPECTED_PREDICTOR_BUILD!r}."
+        )
+    if version != EXPECTED_PREDICTOR_VERSION:
+        raise RuntimeError(
+            f"Production predictor VERSION is {version!r}; expected "
+            f"{EXPECTED_PREDICTOR_VERSION!r}."
         )
     return build_id, version
 
@@ -1121,10 +1145,21 @@ def build_integrity_certificate(
     add_integrity_check(
         details,
         "MODEL",
-        "predictor_build",
-        str(predictor_audit.get("build_id", "")) == EXPECTED_PREDICTOR_BUILD,
-        EXPECTED_PREDICTOR_BUILD,
-        predictor_audit.get("build_id"),
+        "predictor_build_and_version",
+        (
+            str(predictor_audit.get("build_id", ""))
+            == EXPECTED_PREDICTOR_BUILD
+            and str(predictor_audit.get("version", ""))
+            == EXPECTED_PREDICTOR_VERSION
+        ),
+        {
+            "build_id": EXPECTED_PREDICTOR_BUILD,
+            "version": EXPECTED_PREDICTOR_VERSION,
+        },
+        {
+            "build_id": predictor_audit.get("build_id"),
+            "version": predictor_audit.get("version"),
+        },
         "The exact frozen production predictor must have generated the cards.",
     )
     model_lineage = {
@@ -1191,7 +1226,7 @@ def build_integrity_certificate(
             "sportsbook_staking_enabled": 0,
         },
         frozen_flags,
-        "Structural review cannot alter either frozen model card and staking remains disabled.",
+        "Learned-consensus review cannot alter either frozen model card and staking remains disabled.",
     )
     model_file_metrics = audit_model_files(
         predictor_audit, previous_payload, details
@@ -1689,47 +1724,240 @@ def build_integrity_certificate(
         "Week 1 and all later weeks retain one non-degenerate authoritative prior QB per team.",
     )
 
-    structural = table_or_empty(args.db_path, STRUCTURAL_TABLE, "STRUCTURAL", details)
+    structural = table_or_empty(
+        args.db_path,
+        STRUCTURAL_TABLE,
+        "LEARNED_CONSENSUS",
+        details,
+    )
     structural_week = frame_for_season_week(structural, week)
     structural_ids = set(
         structural_week.get("game_id", pd.Series(dtype=str)).astype(str)
     )
+    structural_run_ids = {
+        value
+        for value in structural_week.get(
+            "run_id", pd.Series(dtype=str)
+        ).astype(str).str.strip()
+        if value
+    }
+    predictor_learned_lineage = {
+        "run_id": str(predictor_audit.get("structural_run_id", "")),
+        "build_id": str(predictor_audit.get("structural_build_id", "")),
+        "version": str(predictor_audit.get("structural_version", "")),
+        "model_variant": str(
+            predictor_audit.get("structural_model_variant", "")
+        ),
+        "bundle_build_id": str(
+            predictor_audit.get("structural_learned_bundle_build_id", "")
+        ),
+        "bundle_version": str(
+            predictor_audit.get("structural_learned_bundle_version", "")
+        ),
+        "bundle_sha256": str(
+            predictor_audit.get("structural_learned_bundle_sha256", "")
+        ),
+        "snapshot_hash": str(
+            predictor_audit.get("structural_learned_snapshot_hash", "")
+        ),
+    }
+    expected_predictor_learned_lineage = {
+        "run_id": next(iter(structural_run_ids))
+        if len(structural_run_ids) == 1
+        else "",
+        "build_id": EXPECTED_STRUCTURAL_BUILD,
+        "version": EXPECTED_STRUCTURAL_VERSION,
+        "model_variant": EXPECTED_STRUCTURAL_MODEL_VARIANT,
+        "bundle_build_id": EXPECTED_LEARNED_BUNDLE_BUILD,
+        "bundle_version": EXPECTED_LEARNED_BUNDLE_VERSION,
+        "bundle_sha256": EXPECTED_LEARNED_BUNDLE_SHA256,
+        "snapshot_hash": EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH,
+    }
     home_cutoff = pd.to_numeric(
         structural_week.get("home_rating_through_week"), errors="coerce"
     )
     away_cutoff = pd.to_numeric(
         structural_week.get("away_rating_through_week"), errors="coerce"
     )
-    structural_ok = (
+    form_cutoff = pd.to_numeric(
+        structural_week.get("form_through_week"), errors="coerce"
+    )
+    projection_columns = (
+        "projected_home_margin",
+        "unit_projection",
+        "slot_projection",
+        "nonlinear_projection",
+        "consensus_projection",
+        "projection_range",
+    )
+    projections = {
+        column: pd.to_numeric(
+            structural_week.get(column, pd.Series(dtype=float)),
+            errors="coerce",
+        )
+        for column in projection_columns
+    }
+    finite_projections = all(
+        len(values) == len(structural_week)
+        and values.notna().all()
+        and np.isfinite(values).all()
+        for values in projections.values()
+    )
+    consensus_mean = (
+        projections["unit_projection"]
+        + projections["nonlinear_projection"]
+    ) / 2.0
+    projection_reconciles = (
+        finite_projections
+        and np.allclose(
+            projections["projected_home_margin"],
+            consensus_mean,
+            atol=1e-10,
+            rtol=0.0,
+        )
+        and np.allclose(
+            projections["consensus_projection"],
+            consensus_mean,
+            atol=1e-10,
+            rtol=0.0,
+        )
+    )
+    calculated_range = (
+        pd.concat(
+            [
+                projections["unit_projection"],
+                projections["slot_projection"],
+                projections["nonlinear_projection"],
+            ],
+            axis=1,
+        ).max(axis=1)
+        - pd.concat(
+            [
+                projections["unit_projection"],
+                projections["slot_projection"],
+                projections["nonlinear_projection"],
+            ],
+            axis=1,
+        ).min(axis=1)
+    )
+    range_reconciles = (
+        finite_projections
+        and np.allclose(
+            projections["projection_range"],
+            calculated_range,
+            atol=1e-10,
+            rtol=0.0,
+        )
+    )
+    agreement_count = pd.to_numeric(
+        structural_week.get("model_agreement_count"), errors="coerce"
+    )
+    agreement_ok = (
+        len(agreement_count) == len(structural_week)
+        and agreement_count.notna().all()
+        and agreement_count.between(0, 3).all()
+        and np.allclose(
+            agreement_count,
+            np.round(agreement_count),
+            atol=1e-10,
+            rtol=0.0,
+        )
+    )
+    projection_hash = structural_week.get(
+        "independent_projection_hash", pd.Series(dtype=str)
+    ).astype(str)
+    learned_consensus_ok = (
         len(structural_week) == len(target_schedule)
         and structural_ids == target_ids
+        and len(structural_run_ids) == 1
+        and predictor_learned_lineage
+        == expected_predictor_learned_lineage
         and home_cutoff.eq(cutoff_week).all()
         and away_cutoff.eq(cutoff_week).all()
+        and form_cutoff.eq(cutoff_week).all()
         and pd.to_numeric(
             structural_week.get("prediction_uses_market_inputs"), errors="coerce"
         ).eq(0).all()
-        and structural_week.get("build_id", pd.Series(dtype=str)).astype(str).eq(EXPECTED_STRUCTURAL_BUILD).all()
-        and structural_week.get("independent_projection_hash", pd.Series(dtype=str)).astype(str).str.len().eq(64).all()
+        and structural_week.get("build_id", pd.Series(dtype=str)).astype(str).eq(
+            EXPECTED_STRUCTURAL_BUILD
+        ).all()
+        and structural_week.get("version", pd.Series(dtype=str)).astype(str).eq(
+            EXPECTED_STRUCTURAL_VERSION
+        ).all()
+        and structural_week.get(
+            "model_variant", pd.Series(dtype=str)
+        ).astype(str).eq(EXPECTED_STRUCTURAL_MODEL_VARIANT).all()
+        and structural_week.get(
+            "learned_bundle_build_id", pd.Series(dtype=str)
+        ).astype(str).eq(EXPECTED_LEARNED_BUNDLE_BUILD).all()
+        and structural_week.get(
+            "learned_bundle_version", pd.Series(dtype=str)
+        ).astype(str).eq(EXPECTED_LEARNED_BUNDLE_VERSION).all()
+        and structural_week.get(
+            "learned_bundle_sha256", pd.Series(dtype=str)
+        ).astype(str).eq(EXPECTED_LEARNED_BUNDLE_SHA256).all()
+        and structural_week.get(
+            "learned_structural_snapshot_hash", pd.Series(dtype=str)
+        ).astype(str).eq(EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH).all()
+        and projection_reconciles
+        and range_reconciles
+        and agreement_ok
+        and pd.to_numeric(
+            structural_week.get(
+                "legacy_additive_components_used_in_final_projection"
+            ),
+            errors="coerce",
+        ).eq(0).all()
+        and len(projection_hash) == len(structural_week)
+        and projection_hash.str.fullmatch(r"[0-9a-f]{64}").all()
     )
     add_integrity_check(
         details,
-        "STRUCTURAL",
-        "exact_prior_only_structural_projection",
-        structural_ok,
+        "LEARNED_CONSENSUS",
+        "exact_prior_only_learned_consensus_projection",
+        learned_consensus_ok,
         {
             "games": len(target_schedule),
             "game_ids": sorted(target_ids),
             "through_week": cutoff_week,
             "market_inputs": 0,
             "build_id": EXPECTED_STRUCTURAL_BUILD,
+            "version": EXPECTED_STRUCTURAL_VERSION,
+            "model_variant": EXPECTED_STRUCTURAL_MODEL_VARIANT,
+            "learned_bundle_build_id": EXPECTED_LEARNED_BUNDLE_BUILD,
+            "learned_bundle_version": EXPECTED_LEARNED_BUNDLE_VERSION,
+            "learned_bundle_sha256": EXPECTED_LEARNED_BUNDLE_SHA256,
+            "learned_structural_snapshot_hash": (
+                EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH
+            ),
+            "legacy_additive_components_used": 0,
         },
         {
             "rows": len(structural_week),
             "game_ids": sorted(structural_ids),
+            "structural_run_ids": sorted(structural_run_ids),
+            "predictor_learned_lineage": predictor_learned_lineage,
             "home_cutoffs": sorted(home_cutoff.dropna().unique().tolist()),
             "away_cutoffs": sorted(away_cutoff.dropna().unique().tolist()),
+            "form_cutoffs": sorted(form_cutoff.dropna().unique().tolist()),
+            "build_ids": sorted(
+                structural_week.get("build_id", pd.Series(dtype=str))
+                .astype(str).unique().tolist()
+            ),
+            "versions": sorted(
+                structural_week.get("version", pd.Series(dtype=str))
+                .astype(str).unique().tolist()
+            ),
+            "model_variants": sorted(
+                structural_week.get("model_variant", pd.Series(dtype=str))
+                .astype(str).unique().tolist()
+            ),
+            "projection_reconciles": projection_reconciles,
+            "range_reconciles": range_reconciles,
+            "agreement_count_valid": agreement_ok,
         },
-        "Structural/form/HFA confirmation must be exact-week, prior-only, and market-independent.",
+        "The confidence source must be the exact frozen learned consensus, "
+        "exact-week, prior-only, internally reconciled, and market-independent.",
     )
 
     portfolio["entry_number"] = pd.to_numeric(
@@ -2210,7 +2438,7 @@ def run_self_test() -> int:
                 {
                     "run_id": predictor_run_id,
                     "build_id": EXPECTED_PREDICTOR_BUILD,
-                    "version": "self_test",
+                    "version": EXPECTED_PREDICTOR_VERSION,
                     "season": SEASON,
                     "week": 2,
                     "feature_source": (
@@ -2227,6 +2455,24 @@ def run_self_test() -> int:
                     "production_promoted": 1,
                     "immutable_model_card_preserved": 1,
                     "structural_used_to_change_model_card": 0,
+                    "structural_run_id": "self_test_learned_run",
+                    "structural_build_id": EXPECTED_STRUCTURAL_BUILD,
+                    "structural_version": EXPECTED_STRUCTURAL_VERSION,
+                    "structural_model_variant": (
+                        EXPECTED_STRUCTURAL_MODEL_VARIANT
+                    ),
+                    "structural_learned_bundle_build_id": (
+                        EXPECTED_LEARNED_BUNDLE_BUILD
+                    ),
+                    "structural_learned_bundle_version": (
+                        EXPECTED_LEARNED_BUNDLE_VERSION
+                    ),
+                    "structural_learned_bundle_sha256": (
+                        EXPECTED_LEARNED_BUNDLE_SHA256
+                    ),
+                    "structural_learned_snapshot_hash": (
+                        EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH
+                    ),
                     "sportsbook_staking_enabled": 0,
                     "created_at": created_at,
                 }
@@ -2327,8 +2573,34 @@ def run_self_test() -> int:
         ].copy()
         structural["home_rating_through_week"] = 1
         structural["away_rating_through_week"] = 1
+        structural["run_id"] = "self_test_learned_run"
+        structural["form_through_week"] = 1
         structural["prediction_uses_market_inputs"] = 0
         structural["build_id"] = EXPECTED_STRUCTURAL_BUILD
+        structural["version"] = EXPECTED_STRUCTURAL_VERSION
+        structural["model_variant"] = EXPECTED_STRUCTURAL_MODEL_VARIANT
+        structural["learned_bundle_build_id"] = (
+            EXPECTED_LEARNED_BUNDLE_BUILD
+        )
+        structural["learned_bundle_version"] = (
+            EXPECTED_LEARNED_BUNDLE_VERSION
+        )
+        structural["learned_bundle_sha256"] = (
+            EXPECTED_LEARNED_BUNDLE_SHA256
+        )
+        structural["learned_structural_snapshot_hash"] = (
+            EXPECTED_LEARNED_STRUCTURAL_SNAPSHOT_HASH
+        )
+        structural["unit_projection"] = np.linspace(-3.0, 3.0, len(structural))
+        structural["slot_projection"] = structural["unit_projection"]
+        structural["nonlinear_projection"] = structural["unit_projection"]
+        structural["consensus_projection"] = structural["unit_projection"]
+        structural["projected_home_margin"] = structural["unit_projection"]
+        structural["projection_range"] = 0.0
+        structural["model_agreement_count"] = 3
+        structural[
+            "legacy_additive_components_used_in_final_projection"
+        ] = 0
         structural["independent_projection_hash"] = [
             hashlib.sha256(str(game_id).encode("utf-8")).hexdigest()
             for game_id in structural["game_id"]
@@ -2396,6 +2668,61 @@ def run_self_test() -> int:
                 raise AssertionError("Integrity detail table was not persisted.")
         finally:
             connection.close()
+
+        def assert_learned_source_rejected(
+            candidate: pd.DataFrame,
+            label: str,
+        ) -> None:
+            with sqlite3.connect(database) as connection:
+                candidate.to_sql(
+                    STRUCTURAL_TABLE,
+                    connection,
+                    if_exists="replace",
+                    index=False,
+                )
+            rejected_payload, rejected_details = build_integrity_certificate(
+                self_test_args,
+                integrity_schedule,
+                "SELF_TEST_SCHEDULE",
+                2,
+                lines_path,
+                line_audit_path,
+                None,
+                label,
+            )
+            learned_check = rejected_details[
+                rejected_details["check_name"].eq(
+                    "exact_prior_only_learned_consensus_projection"
+                )
+            ]
+            if (
+                rejected_payload["status"] != "FAIL"
+                or len(learned_check) != 1
+                or str(learned_check.iloc[0]["status"]) != "FAIL"
+            ):
+                raise AssertionError(
+                    f"Invalid learned-consensus source was not rejected: {label}."
+                )
+
+        legacy_structural = structural.copy()
+        legacy_structural["model_variant"] = "STRUCTURAL_FORM_HFA"
+        assert_learned_source_rejected(
+            legacy_structural,
+            "SELF_TEST_LEGACY_STRUCTURAL_REJECTION",
+        )
+        wrong_hash_structural = structural.copy()
+        wrong_hash_structural["learned_bundle_sha256"] = "0" * 64
+        assert_learned_source_rejected(
+            wrong_hash_structural,
+            "SELF_TEST_WRONG_LEARNED_SHA_REJECTION",
+        )
+        with sqlite3.connect(database) as connection:
+            structural.to_sql(
+                STRUCTURAL_TABLE,
+                connection,
+                if_exists="replace",
+                index=False,
+            )
 
         broken = game_matrix.copy()
         broken["qb_recent_epa_advantage"] = 0.0
