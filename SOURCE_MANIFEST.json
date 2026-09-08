@@ -1,0 +1,325 @@
+[
+  {
+    "uploaded_file": "audit_nfl_rebuilt_historical_replay(3).py",
+    "archive_file": "audit_nfl_rebuilt_historical_replay.py",
+    "source_sha256": "8b5f947ab47a410404fd434192e1dd916d40e6555fb3062b7263d695ab7f3508",
+    "archive_sha256": "01073169c27c0f4ced56dc47c08f8eed1aa30e845c3dc2f5696f3c18adc5b927",
+    "changes": [
+      "Updated obsolete default project root to nfl_model"
+    ]
+  },
+  {
+    "uploaded_file": "backfill_nfl_historical_advanced_stats(2).py",
+    "archive_file": "backfill_nfl_historical_advanced_stats.py",
+    "source_sha256": "7a828aaa0fef5e9ff39ee394409f437635086987f73fe57f6cd546d122e39a19",
+    "archive_sha256": "0b9076ef93dd0826c97a6174e6af9fc341608b7f2af73442bcf135fb1c9569c6",
+    "changes": [
+      "Updated obsolete default project root to nfl_model"
+    ]
+  },
+  {
+    "uploaded_file": "backtest_nfl_learned_structural_weights(1).py",
+    "archive_file": "backtest_nfl_learned_structural_weights.py",
+    "source_sha256": "19d3eb6f54c283cac516df710510d07f7072ca6378119061c8adfcefd941614e",
+    "archive_sha256": "19d3eb6f54c283cac516df710510d07f7072ca6378119061c8adfcefd941614e",
+    "changes": []
+  },
+  {
+    "uploaded_file": "backtest_nfl_nonlinear_matchup_consensus(1).py",
+    "archive_file": "backtest_nfl_nonlinear_matchup_consensus.py",
+    "source_sha256": "10e2c24980aea7c2806aa8e950a60347d5794170f17df0b3ef912ff90afa27c6",
+    "archive_sha256": "10e2c24980aea7c2806aa8e950a60347d5794170f17df0b3ef912ff90afa27c6",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_backtest_nfl_circa_contest_lines(5).py",
+    "archive_file": "build_backtest_nfl_circa_contest_lines.py",
+    "source_sha256": "a0ebd4cc3ab08080902663ed0389a4cdcdd483595848a45d87ac264b78a19baf",
+    "archive_sha256": "a0ebd4cc3ab08080902663ed0389a4cdcdd483595848a45d87ac264b78a19baf",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_backtest_nfl_circa_season_phase_v3_2(2).py",
+    "archive_file": "build_backtest_nfl_circa_season_phase_v3_2.py",
+    "source_sha256": "f7a29d1edbc3fce126b70b97b822ac5dd70ab4aa1098111895e55045df76e75b",
+    "archive_sha256": "f7a29d1edbc3fce126b70b97b822ac5dd70ab4aa1098111895e55045df76e75b",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_backtest_nfl_weekly_matchup_residual(4).py",
+    "archive_file": "build_backtest_nfl_weekly_matchup_residual.py",
+    "source_sha256": "a163dc51a89d7faede3eb221a76154828201a480c5fbd40088ad6608aa002d39",
+    "archive_sha256": "a163dc51a89d7faede3eb221a76154828201a480c5fbd40088ad6608aa002d39",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_2026_form_rating(7).py",
+    "archive_file": "build_nfl_2026_form_rating.py",
+    "source_sha256": "94dc43d2f6d54956ff6c27f6c0a2fd1b8ff24597d71964e0c7042482011e0b65",
+    "archive_sha256": "94dc43d2f6d54956ff6c27f6c0a2fd1b8ff24597d71964e0c7042482011e0b65",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_defensive_metrics_summary(4).py",
+    "archive_file": "build_nfl_defensive_metrics_summary.py",
+    "source_sha256": "b6a03401f94f4012c9bb6ef561b86bb77fedf4c90a0cf08975c7570efb15a5cc",
+    "archive_sha256": "b6a03401f94f4012c9bb6ef561b86bb77fedf4c90a0cf08975c7570efb15a5cc",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_historical_player_performance_depth(4).py",
+    "archive_file": "build_nfl_historical_player_performance_depth.py",
+    "source_sha256": "b287f130c141caf6198ec08108419342e68bf63053afa7ead353ed737c916913",
+    "archive_sha256": "b287f130c141caf6198ec08108419342e68bf63053afa7ead353ed737c916913",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_historical_qb_defense(4).py",
+    "archive_file": "build_nfl_historical_qb_defense.py",
+    "source_sha256": "4e9d2f67e76c704bddd710ac0b2410913106876eefdbbfd076c08c174f71a2c5",
+    "archive_sha256": "4e9d2f67e76c704bddd710ac0b2410913106876eefdbbfd076c08c174f71a2c5",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_learned_consensus_2026(1).py",
+    "archive_file": "build_nfl_learned_consensus_2026.py",
+    "source_sha256": "8610c41fa8ddec5d98a1f138811d9a07eb84534deeb1e2b4f918e0044284a1b3",
+    "archive_sha256": "8610c41fa8ddec5d98a1f138811d9a07eb84534deeb1e2b4f918e0044284a1b3",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_ol_continuity(7).py",
+    "archive_file": "build_nfl_ol_continuity.py",
+    "source_sha256": "75eda4481fd3259fbce4384f9a489fb3cdf12d1953fc6d9f62bdb9ea2e30e5f3",
+    "archive_sha256": "75eda4481fd3259fbce4384f9a489fb3cdf12d1953fc6d9f62bdb9ea2e30e5f3",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_player_crosswalk(4).py",
+    "archive_file": "build_nfl_player_crosswalk.py",
+    "source_sha256": "422666e3321b70bfc0b01dde6833c4d9b17b28d6777d4bfe3a48d6eae3e518ff",
+    "archive_sha256": "422666e3321b70bfc0b01dde6833c4d9b17b28d6777d4bfe3a48d6eae3e518ff",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_player_master(4).py",
+    "archive_file": "build_nfl_player_master.py",
+    "source_sha256": "6cf6730567f16a796c4686fdff35370a593d49dd66ee6d3eb01536b4db55e032",
+    "archive_sha256": "6cf6730567f16a796c4686fdff35370a593d49dd66ee6d3eb01536b4db55e032",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_player_performance(20260908-004601).py",
+    "archive_file": "build_nfl_player_performance.py",
+    "source_sha256": "7a362d95e9dfa0ac32747a3f6a3c68488a5e26972a71fab65a14847d00b00f12",
+    "archive_sha256": "7a362d95e9dfa0ac32747a3f6a3c68488a5e26972a71fab65a14847d00b00f12",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_power_ratings(6).py",
+    "archive_file": "build_nfl_power_ratings.py",
+    "source_sha256": "e7b643249bf01ba7f08e2ed014dc9e42661f885dcb92bc54c2ffc2ab14e59611",
+    "archive_sha256": "e7b643249bf01ba7f08e2ed014dc9e42661f885dcb92bc54c2ffc2ab14e59611",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_projected_depth_chart(9).py",
+    "archive_file": "build_nfl_projected_depth_chart.py",
+    "source_sha256": "a6ffed21dfe0d7cd6c8976af2805dde62e88311183b3c8393271ed4142cf31b3",
+    "archive_sha256": "a6ffed21dfe0d7cd6c8976af2805dde62e88311183b3c8393271ed4142cf31b3",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_team_strength(7).py",
+    "archive_file": "build_nfl_team_strength.py",
+    "source_sha256": "0a19ec61da56a538a388d709ce343e0bc7e72da4135b26f27b8f32cc2f5b1e33",
+    "archive_sha256": "0a19ec61da56a538a388d709ce343e0bc7e72da4135b26f27b8f32cc2f5b1e33",
+    "changes": []
+  },
+  {
+    "uploaded_file": "build_nfl_team_unit_ratings(10).py",
+    "archive_file": "build_nfl_team_unit_ratings.py",
+    "source_sha256": "e3d45232f61114e4e33e2b49d74be9be70796eb20499eca05cd362a7ada30a47",
+    "archive_sha256": "e3d45232f61114e4e33e2b49d74be9be70796eb20499eca05cd362a7ada30a47",
+    "changes": []
+  },
+  {
+    "uploaded_file": "load_nfl_coverage_metrics(4).py",
+    "archive_file": "load_nfl_coverage_metrics.py",
+    "source_sha256": "61a69f34dfd6c02344603fa277e5de5ade77206d6112fc2a5926ff4183884bc9",
+    "archive_sha256": "61a69f34dfd6c02344603fa277e5de5ade77206d6112fc2a5926ff4183884bc9",
+    "changes": []
+  },
+  {
+    "uploaded_file": "load_nfl_defensive_front_metrics(4).py",
+    "archive_file": "load_nfl_defensive_front_metrics.py",
+    "source_sha256": "d284695768bf73c0c232da0f52debef16809b048fecea47ca3283a7df879bc01",
+    "archive_sha256": "d284695768bf73c0c232da0f52debef16809b048fecea47ca3283a7df879bc01",
+    "changes": []
+  },
+  {
+    "uploaded_file": "load_nfl_live_market_odds.py",
+    "archive_file": "load_nfl_live_market_odds.py",
+    "source_sha256": "f0c6636f09a7513643a91e400cee0a08cba9ab14a2a463a19b57eb9121207403",
+    "archive_sha256": "f0c6636f09a7513643a91e400cee0a08cba9ab14a2a463a19b57eb9121207403",
+    "changes": []
+  },
+  {
+    "uploaded_file": "load_nfl_rosters(3).py",
+    "archive_file": "load_nfl_rosters.py",
+    "source_sha256": "f1fb498be4a4a8fe7fa29e5a8395e1bdfc97cb7dacb044a0736296036437bd69",
+    "archive_sha256": "f1fb498be4a4a8fe7fa29e5a8395e1bdfc97cb7dacb044a0736296036437bd69",
+    "changes": []
+  },
+  {
+    "uploaded_file": "load_rbsdm_qb_ratings(6).py",
+    "archive_file": "load_rbsdm_qb_ratings.py",
+    "source_sha256": "a2c500b876e78c9f332c6540656db8538364b8d075d72be16213ad399128d7c8",
+    "archive_sha256": "a2c500b876e78c9f332c6540656db8538364b8d075d72be16213ad399128d7c8",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_circa_contest_model_v1(1).joblib",
+    "archive_file": "models/nfl_circa_contest_model_v1.joblib",
+    "source_sha256": "bb65a152094bb152f99615061eade5e34548f4da2c930ce502074b1df2e4d34e",
+    "archive_sha256": "bb65a152094bb152f99615061eade5e34548f4da2c930ce502074b1df2e4d34e",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_circa_contest_model_v1_metadata(1).json",
+    "archive_file": "models/nfl_circa_contest_model_v1_metadata.json",
+    "source_sha256": "bed1e033d7c33339de1587e7786583dc0614c0e8b3d2bd53d31675b0abb7cbda",
+    "archive_sha256": "bed1e033d7c33339de1587e7786583dc0614c0e8b3d2bd53d31675b0abb7cbda",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_circa_contest_season_phase_v3_2(1).joblib",
+    "archive_file": "models/nfl_circa_contest_season_phase_v3_2.joblib",
+    "source_sha256": "1992092ff2f535ab37448781d6354abce1da8650842b2388cc6dcb9712604cae",
+    "archive_sha256": "1992092ff2f535ab37448781d6354abce1da8650842b2388cc6dcb9712604cae",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_circa_contest_season_phase_v3_2_metadata(1).json",
+    "archive_file": "models/nfl_circa_contest_season_phase_v3_2_metadata.json",
+    "source_sha256": "3b4d0fb09332c4ca7fed4167354c54223b7cc3447bb8500c9832868566b27dbf",
+    "archive_sha256": "3b4d0fb09332c4ca7fed4167354c54223b7cc3447bb8500c9832868566b27dbf",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_learned_consensus_2026.joblib",
+    "archive_file": "models/nfl_learned_consensus_2026.joblib",
+    "source_sha256": "5c298a2ef0555612525df2fcc0341d4bbb0c19be5dd6226089f2511f9fcbe524",
+    "archive_sha256": "5c298a2ef0555612525df2fcc0341d4bbb0c19be5dd6226089f2511f9fcbe524",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_learned_consensus_2026_metadata.json",
+    "archive_file": "models/nfl_learned_consensus_2026_metadata.json",
+    "source_sha256": "d7feb8640a6a2eb63e73820528a0edc00a02fe677ef3ca418a59d9988101c465",
+    "archive_sha256": "d7feb8640a6a2eb63e73820528a0edc00a02fe677ef3ca418a59d9988101c465",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_matchup_residual_model_v2.joblib",
+    "archive_file": "models/nfl_matchup_residual_model_v2.joblib",
+    "source_sha256": "19f7f642f6d10f4d2d2c28412766c297b2df0464910ed8f5c0e5e0b6c574360e",
+    "archive_sha256": "19f7f642f6d10f4d2d2c28412766c297b2df0464910ed8f5c0e5e0b6c574360e",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_matchup_residual_model_v2_metadata.json",
+    "archive_file": "models/nfl_matchup_residual_model_v2_metadata.json",
+    "source_sha256": "9ce6297d14aec248579e2c65e5a18551a835856d3249dbffea523f328c114ab9",
+    "archive_sha256": "9ce6297d14aec248579e2c65e5a18551a835856d3249dbffea523f328c114ab9",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_player_advanced_stats(7).py",
+    "archive_file": "nfl_player_advanced_stats.py",
+    "source_sha256": "0789e6781edf812937fd7c5a3e86cbf5f66068b0866425e5fa1b803b1f28b3a4",
+    "archive_sha256": "0789e6781edf812937fd7c5a3e86cbf5f66068b0866425e5fa1b803b1f28b3a4",
+    "changes": []
+  },
+  {
+    "uploaded_file": "nfl_schedule_2026.csv",
+    "archive_file": "nfl_schedule_2026.csv",
+    "source_sha256": "0dbdd4676b44d1e6e5629a2cd516e1d948c45d2f460d8d54a9c911cb34e6e74f",
+    "archive_sha256": "9f515681d02a849e8acf2383d85a271dab6f3bc4c797f91033fccbea233d0691",
+    "changes": [
+      "Converted Windows-1252 encoding to UTF-8"
+    ]
+  },
+  {
+    "uploaded_file": "predict_nfl_circa_top5_2026(9).py",
+    "archive_file": "predict_nfl_circa_top5_2026.py",
+    "source_sha256": "6348d9b13245004ef24c1d12c065a2b82b6af086407af5b972c58abf2c44aaff",
+    "archive_sha256": "6348d9b13245004ef24c1d12c065a2b82b6af086407af5b972c58abf2c44aaff",
+    "changes": []
+  },
+  {
+    "uploaded_file": "predict_nfl_weekly_learned_consensus_2026(1).py",
+    "archive_file": "predict_nfl_weekly_learned_consensus_2026.py",
+    "source_sha256": "ec58c271e9701a2f0327630ed7ad0d0488836de1913d8689987272a4663a28de",
+    "archive_sha256": "ec58c271e9701a2f0327630ed7ad0d0488836de1913d8689987272a4663a28de",
+    "changes": []
+  },
+  {
+    "uploaded_file": "predict_nfl_weekly_power_spreads_2026(7).py",
+    "archive_file": "predict_nfl_weekly_power_spreads_2026.py",
+    "source_sha256": "eccdea3174d98b68c68b43743eb09a2aa72561ad3002f22a8d34ac41e960d030",
+    "archive_sha256": "eccdea3174d98b68c68b43743eb09a2aa72561ad3002f22a8d34ac41e960d030",
+    "changes": []
+  },
+  {
+    "uploaded_file": "prepare_nfl_historical_reconstruction(3).py",
+    "archive_file": "prepare_nfl_historical_reconstruction.py",
+    "source_sha256": "422eaef3db3a1c8cf20e0e9ac4fa13de2e69546141ed7cd1746c5e74c2b7d22b",
+    "archive_sha256": "310ac90e090fb2cc5fb131e6c8bf25ffc5b101bd0ad7dbe02be88149f9856f58",
+    "changes": [
+      "Updated obsolete default project root to nfl_model"
+    ]
+  },
+  {
+    "uploaded_file": "replay_nfl_historical_weekly_spreads(5).py",
+    "archive_file": "replay_nfl_historical_weekly_spreads.py",
+    "source_sha256": "ee33df610c22d9677820b7e37b55b0a8d7c641d8ee315a0e68e3ea84d703d9e2",
+    "archive_sha256": "ee33df610c22d9677820b7e37b55b0a8d7c641d8ee315a0e68e3ea84d703d9e2",
+    "changes": []
+  },
+  {
+    "uploaded_file": "run_nfl_circa_qb_repair(1).py",
+    "archive_file": "run_nfl_circa_qb_repair.py",
+    "source_sha256": "5199ea4ca8ff326f0fb7c79ae6e7823aa3ab114767b70e48c46290714ef7ecfe",
+    "archive_sha256": "5199ea4ca8ff326f0fb7c79ae6e7823aa3ab114767b70e48c46290714ef7ecfe",
+    "changes": []
+  },
+  {
+    "uploaded_file": "run_nfl_circa_weekly_2026(1).py",
+    "archive_file": "run_nfl_circa_weekly_2026.py",
+    "source_sha256": "ab6c68dd4076c2f10baac2cd1dd17c39b0a0ab040341ee034931c14302f29a87",
+    "archive_sha256": "ab6c68dd4076c2f10baac2cd1dd17c39b0a0ab040341ee034931c14302f29a87",
+    "changes": []
+  },
+  {
+    "uploaded_file": "run_nfl_structural_refresh(7).py",
+    "archive_file": "run_nfl_structural_refresh.py",
+    "source_sha256": "d679d8ad175cba1c023a55d8f2ca8981f67d7dc698e4850f7ee56cd4e1963f1c",
+    "archive_sha256": "d679d8ad175cba1c023a55d8f2ca8981f67d7dc698e4850f7ee56cd4e1963f1c",
+    "changes": []
+  },
+  {
+    "uploaded_file": "run_nfl_weekly_2026_final(8).py",
+    "archive_file": "run_nfl_weekly_2026_final.py",
+    "source_sha256": "53058565b41a2ff819ceecb78450c093c89f54dff2176b2f69b0c8fc6fee25f8",
+    "archive_sha256": "53058565b41a2ff819ceecb78450c093c89f54dff2176b2f69b0c8fc6fee25f8",
+    "changes": []
+  },
+  {
+    "uploaded_file": "run_nfl_weekly_form(4).py",
+    "archive_file": "run_nfl_weekly_form.py",
+    "source_sha256": "03b3a548084546dba96dd887d1cafa551267b2be6639d4f02e81b97c610165f6",
+    "archive_sha256": "03b3a548084546dba96dd887d1cafa551267b2be6639d4f02e81b97c610165f6",
+    "changes": []
+  }
+]

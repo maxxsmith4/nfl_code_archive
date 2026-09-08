@@ -1,0 +1,374 @@
+[
+  {
+    "file": "audit_nfl_rebuilt_historical_replay.py",
+    "purpose": "Read-only independent recalculation of historical replay results, leakage/duplicate checks, legacy comparison, calibration and flat/Kelly summaries.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_REBUILT_HISTORICAL_REPLAY_FINAL_AUDIT_V1",
+      "VERSION": "v1_independent_recalculation_legacy_comparison_calibration_staking"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "backfill_nfl_historical_advanced_stats.py",
+    "purpose": "Historical Stage 2: import the canonical advanced-stats builder, create shared history, then restrict each target season to its legal preceding four-year window.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_HISTORICAL_ADVANCED_STATS_CANONICAL_V1",
+      "VERSION": "v1_reuse_v3_2_final_rolling_four_year_windows",
+      "EXPECTED_BUILD_ID": "NFL_ADVANCED_STATS_2026_V3_2_FINAL",
+      "EXPECTED_VERSION": "v3_2_final_snap_participation_identity"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "backtest_nfl_learned_structural_weights.py",
+    "purpose": "Learn positive unit/slot weights, form/process/result mix and transition parameters using nested season-forward scoring-margin validation. Attach Circa afterward for ATS grading.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_LEARNED_STRUCTURAL_WEIGHTS_BACKTEST_CANONICAL_V1",
+      "VERSION": "v1_0_market_free_nested_season_forward"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "backtest_nfl_nonlinear_matchup_consensus.py",
+    "purpose": "Train nonlinear matchup/personnel projections and compare consensuses with learned structural out-of-fold results. Fit projections market-free; evaluate wagering gates separately using prior out-of-fold outcomes.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_NONLINEAR_MATCHUP_CONSENSUS_BACKTEST_CANONICAL_V1",
+      "VERSION": "v1_0_full_game_market_free_nested_consensus_audit"
+    },
+    "local_imports": [
+      "backtest_nfl_learned_structural_weights"
+    ]
+  },
+  {
+    "file": "build_backtest_nfl_circa_contest_lines.py",
+    "purpose": "Discover and cache official historical Circa PDFs, OCR/reconcile complete boards, and refit/backtest the residual architecture on strict contest lines. Saves V1 model, line tables and integrity audits.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_CIRCA_CONTEST_LINES_CANONICAL_V1",
+      "VERSION": "v1_5_qb_identity_integrity_guard"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_backtest_nfl_circa_season_phase_v3_2.py",
+    "purpose": "Rebuild the fixed ceiling architecture after QB repair: locked V1 early, fixed Ridge late. Require QB feature integrity and tie the bundle to the exact source V1 hash.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_CIRCA_CONTEST_SEASON_PHASE_V3_2_QB_REBUILT",
+      "VERSION": "v3_2_1_fixed_architecture_qb_integrity_lineage"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_backtest_nfl_weekly_matchup_residual.py",
+    "purpose": "Build prior-only matchup and personnel history and a market-anchored residual model. Audit QB ID/feature coverage and variance, forward validation, coefficient stability and deployment gates. Also supplies cached data/features used by other models.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_WEEKLY_MATCHUP_MARKET_RESIDUAL_CANONICAL_V3",
+      "VERSION": "v3_qb_gsis_identity_crosswalk_dead_feature_guard"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_2026_form_rating.py",
+    "purpose": "Use completed games before the prediction week to create opponent-adjusted process/result and season/recent form. Blend with current structural power and preserve the immutable preseason snapshot for audit.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_2026_FORM_RATING_CANONICAL_V3",
+      "VERSION": "v3_current_structural_prior_asof_opponent_adjusted_form",
+      "FEATURE_VERSION": "v2_0_pbp_process_features",
+      "PROCESS_MODEL_VERSION": "v2_0_2018_2025_process_to_points",
+      "EXPECTED_STRUCTURAL_POWER_BUILD_ID": "NFL_POWER_RATINGS_2026_CANONICAL_V2"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_defensive_metrics_summary.py",
+    "purpose": "Join canonical front and coverage outputs to defenders and blend the components actually available.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_DEFENSIVE_SUMMARY_2026_CANONICAL_V3",
+      "METRICS_VERSION": "v3_available_component_front_coverage_blend"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_historical_player_performance_depth.py",
+    "purpose": "Historical Stage 4: reuse canonical player/performance and depth logic with prior-only PFF inputs and frozen Week 1 OL/QB evidence. Validate 32 QB1s and 160 OL starters with full reconciliation.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_HISTORICAL_PLAYER_PERFORMANCE_DEPTH_CANONICAL_V3",
+      "VERSION": "v3_3_week1_snap_ol_bootstrap_prior_only",
+      "EXPECTED_PERFORMANCE_BUILD_ID": "NFL_PLAYER_PERFORMANCE_2026_CANONICAL_V4",
+      "EXPECTED_PERFORMANCE_VERSION": "v4_1_pff_row_identity_collision_safe",
+      "EXPECTED_DEPTH_BUILD_ID": "NFL_PROJECTED_DEPTH_CHART_2026_CANONICAL_V5",
+      "EXPECTED_DEPTH_VERSION": "v5_pff_ol_talent_no_second_shrink_authoritative_starters"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_historical_qb_defense.py",
+    "purpose": "Historical Stage 3: run verified production QB and defense sources against isolated season/table settings, preserving prior-only windows and readiness audits.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_HISTORICAL_QB_DEFENSE_CANONICAL_V2",
+      "VERSION": "v2_qb_v3_isolated_database_root_prior_only"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_learned_consensus_2026.py",
+    "purpose": "Fit or reuse the frozen three-model 2026 bundle, its structural snapshots, consensus gate and out-of-fold probability calibration. Reuse validates metadata/hash but presently requires research paths first.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_LEARNED_CONSENSUS_2026_CANONICAL_V1",
+      "VERSION": "v1_0_2020_2025_frozen_market_free_consensus",
+      "EXPECTED_LEARNED_BUILD_ID": "NFL_LEARNED_STRUCTURAL_WEIGHTS_BACKTEST_CANONICAL_V1",
+      "EXPECTED_LEARNED_VERSION": "v1_0_market_free_nested_season_forward",
+      "EXPECTED_NONLINEAR_BUILD_ID": "NFL_NONLINEAR_MATCHUP_CONSENSUS_BACKTEST_CANONICAL_V1",
+      "EXPECTED_NONLINEAR_VERSION": "v1_0_full_game_market_free_nested_consensus_audit"
+    },
+    "local_imports": [
+      "backtest_nfl_learned_structural_weights",
+      "backtest_nfl_nonlinear_matchup_consensus"
+    ]
+  },
+  {
+    "file": "build_nfl_ol_continuity.py",
+    "purpose": "Measure retained starters and combinations from canonical PFF history and the projected OL. Publish confidence and availability separately; do not rescore OL talent.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_OL_CONTINUITY_2026_CANONICAL_V3",
+      "VERSION": "v3_injury_returner_credit_bounded_secondary_context"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_player_crosswalk.py",
+    "purpose": "Map provider identifiers and name evidence to canonical players. Uses vetted identity sources and snap records, retains ambiguity/reconciliation audits, and prevents unverified name collisions from silently merging players.",
+    "build_and_version": {
+      "CROSSWALK_VERSION": "2026.2.1"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_player_master.py",
+    "purpose": "Resolve the standardized roster into one canonical GSIS-based player population and write duplicate/identity/build audits. A team change does not create a new player.",
+    "build_and_version": {
+      "VERSION": "v2_1_canonical_gsis_master_explicit_audit_schema",
+      "BUILD_AUDIT_TABLE": "nfl_player_master_build_audit_2026"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_player_performance.py",
+    "purpose": "Join all sources by canonical ID; convert supported position metrics to talent grades; use dedicated QB ratings and actual PFF OL grades; apply one replacement-level confidence shrink. Publish reconciliation and PFF identity audits.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_PLAYER_PERFORMANCE_2026_CANONICAL_V4",
+      "PERFORMANCE_VERSION": "v4_1_pff_row_identity_collision_safe"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_power_ratings.py",
+    "purpose": "Convert structural strength to a neutral-field point scale; produce power and historical calibration audits. These are upstream/legacy ratings, not the full final learned-consensus equation.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_POWER_RATINGS_2026_CANONICAL_V2",
+      "VERSION": "v2_native_point_scale_optional_paired_calibration"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_projected_depth_chart.py",
+    "purpose": "Project starters from canonical talent, eligibility and authoritative QB/OL evidence. Preserve the QB authority table and manual OL rows. Talent does not invent OL position assignments.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_PROJECTED_DEPTH_CHART_2026_CANONICAL_V5",
+      "VERSION": "v5_pff_ol_talent_no_second_shrink_authoritative_starters"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_team_strength.py",
+    "purpose": "Combine replacement-anchored units, apply a small confidence/availability-weighted OL continuity contribution once, and expose component/QB/completeness audits. Avoid a second QB adjustment.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_TEAM_STRENGTH_2026_CANONICAL_V3",
+      "VERSION": "v3_pff_ol_talent_primary_bounded_continuity_no_double_count"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "build_nfl_team_unit_ratings.py",
+    "purpose": "Aggregate projected starter/depth grades into position units and team offense, defense and special teams with explicit completeness/confidence contracts.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_TEAM_UNIT_RATINGS_2026_CANONICAL_V8",
+      "VERSION": "v8_pff_ol_talent_contract_qb_ceiling_95"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "load_nfl_coverage_metrics.py",
+    "purpose": "Create current-roster coverage metrics from canonical history with snap-based denominators and confidence shrinkage.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_COVERAGE_2026_CANONICAL_V3",
+      "METRICS_VERSION": "v3_canonical_2022_2025_snap_denominator_shrunk"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "load_nfl_defensive_front_metrics.py",
+    "purpose": "Create current-roster front metrics from historical defensive statistics using consistent snap denominators and confidence shrinkage.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_DEFENSIVE_FRONT_2026_CANONICAL_V3",
+      "METRICS_VERSION": "v3_canonical_2022_2025_snap_denominator_shrunk"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "load_nfl_live_market_odds.py",
+    "purpose": "Fetch current NFL spread markets through the Odds API, reconcile against the schedule and write live market output/audits for execution comparisons. Requires private credentials and the database schedule.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_LIVE_MARKET_ODDS_2026_CANONICAL_V1",
+      "VERSION": "v1_odds_api_sharp_priority_audited_single_line_per_game"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "load_nfl_rosters.py",
+    "purpose": "Import roster data, standardize team/identity fields and preserve provider IDs. Separates raw roster capture from canonical player identity.",
+    "build_and_version": {
+      "VERSION": "v2_0_identity_preserving_roster"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "load_rbsdm_qb_ratings.py",
+    "purpose": "Build the dedicated quarterback efficiency prior using available EPA/CPOE history and optional local QB files. Stabilize individual metrics with sample confidence; preserve the unshrunk composite contract expected downstream.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_RBSDM_QB_2026_CANONICAL_V3",
+      "RATING_VERSION": "v3_single_metric_stabilization_unshrunk_composite"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "nfl_player_advanced_stats.py",
+    "purpose": "Build prior player statistics from weekly data, play-by-play, Next Gen and participation sources. Apply position-specific season weights and reconcile snap IDs, then publish historical and current-roster views.",
+    "build_and_version": {
+      "ADVANCED_BUILD_ID": "NFL_ADVANCED_STATS_2026_V3_2_FINAL",
+      "ADVANCED_VERSION": "v3_2_final_snap_participation_identity"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "predict_nfl_circa_top5_2026.py",
+    "purpose": "Validate frozen Circa bundles, construct or reuse point-in-time features, score official contest lines and produce both fixed-policy cards plus confidence/manual-review outputs. Its structural overlay contract is legacy.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_CIRCA_TOP5_2026_PRODUCTION_CONFIDENCE_BOARD",
+      "VERSION": "v8_3_structural_lineage_live_feature_freshness",
+      "EXPECTED_STRUCTURAL_BUILD_ID": "NFL_WEEKLY_POWER_SPREADS_2026_CANONICAL_V4",
+      "EXPECTED_STRUCTURAL_VERSION": "v4_structural_form_hfa_fail_closed_lineage",
+      "EXPECTED_FORM_BUILD_ID": "NFL_2026_FORM_RATING_CANONICAL_V3",
+      "EXPECTED_FORM_VERSION": "v3_current_structural_prior_asof_opponent_adjusted_form",
+      "EXPECTED_STRUCTURAL_POWER_BUILD_ID": "NFL_POWER_RATINGS_2026_CANONICAL_V2",
+      "EXPECTED_LIVE_MATCHUP_BUILD_ID": "NFL_WEEKLY_MATCHUP_MARKET_RESIDUAL_CANONICAL_V3",
+      "EXPECTED_LIVE_MATCHUP_VERSION": "v3_qb_gsis_identity_crosswalk_dead_feature_guard",
+      "EXPECTED_V1_MODEL_BUILD_ID": "NFL_CIRCA_CONTEST_LINES_CANONICAL_V1",
+      "EXPECTED_V1_MODEL_VERSION": "v1_5_qb_identity_integrity_guard",
+      "EXPECTED_CEILING_MODEL_BUILD_ID": "NFL_CIRCA_CONTEST_SEASON_PHASE_V3_2_QB_REBUILT",
+      "EXPECTED_CEILING_MODEL_VERSION": "v3_2_1_fixed_architecture_qb_integrity_lineage"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "predict_nfl_weekly_learned_consensus_2026.py",
+    "purpose": "Generate independent unit, starter-slot and nonlinear projections; average unit/nonlinear for the fair margin; apply agreement/range/edge/scope gates after market attachment; export readable betting and audit outputs.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_WEEKLY_LEARNED_CONSENSUS_2026_CANONICAL_V1",
+      "VERSION": "v1_3_readable_execution_csv_scope_fix"
+    },
+    "local_imports": [
+      "backtest_nfl_learned_structural_weights",
+      "backtest_nfl_nonlinear_matchup_consensus",
+      "build_backtest_nfl_weekly_matchup_residual",
+      "build_nfl_learned_consensus_2026",
+      "predict_nfl_weekly_power_spreads_2026"
+    ]
+  },
+  {
+    "file": "predict_nfl_weekly_power_spreads_2026.py",
+    "purpose": "Legacy structural/form/HFA spread engine and shared utility module. Adds bounded schedule/rest/manual context, then market comparisons. Retained for historical replay and imports; do not confuse it with the active learned predictor.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_WEEKLY_POWER_SPREADS_2026_CANONICAL_V4",
+      "VERSION": "v4_structural_form_hfa_fail_closed_lineage",
+      "EXPECTED_FORM_BUILD_ID": "NFL_2026_FORM_RATING_CANONICAL_V3",
+      "EXPECTED_FORM_VERSION": "v3_current_structural_prior_asof_opponent_adjusted_form",
+      "EXPECTED_STRUCTURAL_POWER_BUILD_ID": "NFL_POWER_RATINGS_2026_CANONICAL_V2"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "prepare_nfl_historical_reconstruction.py",
+    "purpose": "Historical Stage 1: construct isolated season roster/master/schedule contexts and seed authoritative QB1 from Week 1 participation; grade only from Week 2.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_HISTORICAL_RECONSTRUCTION_CONTEXT_CANONICAL_V1",
+      "VERSION": "v1_weekly_roster_week1_qb_prior_isolated_databases"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "replay_nfl_historical_weekly_spreads.py",
+    "purpose": "Replay the canonical legacy form/spread pair on structurally ready isolated season databases, using only prior-week form; attach market and grade after freezing predictions. Combine rows into the historical replay DB. Selected V4.1 supports a dynamic early-season calibration-history floor.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_REBUILT_HISTORICAL_WEEKLY_REPLAY_CANONICAL_V4",
+      "VERSION": "v4_1_dynamic_form_process_history_floor",
+      "EXPECTED_FORM_BUILD_ID": "NFL_2026_FORM_RATING_CANONICAL_V3",
+      "EXPECTED_FORM_VERSION": "v3_current_structural_prior_asof_opponent_adjusted_form",
+      "EXPECTED_PREDICT_BUILD_ID": "NFL_WEEKLY_POWER_SPREADS_2026_CANONICAL_V4",
+      "EXPECTED_PREDICT_VERSION": "v4_structural_form_hfa_fail_closed_lineage"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "run_nfl_circa_qb_repair.py",
+    "purpose": "Deliberate rebuild chain for matchup/QB features, Circa V1 backtest and repaired ceiling model, with verification. Not the routine weekly job.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_CIRCA_QB_REPAIR_CANONICAL_RUNNER_V1",
+      "VERSION": "v1_2_verification_only_windows_self_test_close"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "run_nfl_circa_weekly_2026.py",
+    "purpose": "Official Circa PDF ingestion, prediction and independent weekly integrity certification. Reconciles schedule/board and audits source capture, cutoffs, QB/OL and model lineage. Stale producer expectations require alignment.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_CIRCA_WEEKLY_2026_CANONICAL_V1",
+      "VERSION": "v1_1_fail_closed_weekly_data_integrity_certificate",
+      "EXPECTED_HISTORICAL_VERSION": "v1_5_qb_identity_integrity_guard",
+      "EXPECTED_V1_MODEL_VERSION": "v1_5_qb_identity_integrity_guard",
+      "EXPECTED_CEILING_MODEL_VERSION": "v3_2_1_fixed_architecture_qb_integrity_lineage"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "run_nfl_structural_refresh.py",
+    "purpose": "Infrequent 14-stage rebuild of roster identity, historical player inputs and structural team ratings. Uses the current Windows root and live database; run sequentially.",
+    "build_and_version": {
+      "RUNNER_VERSION": "canonical_structural_refresh_v1"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "run_nfl_weekly_2026_final.py",
+    "purpose": "Main weekly orchestrator: refresh depth/units/power, build form, verify the frozen model, load market prices and produce learned-consensus predictions. Stops on child failure and records run/step audits.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_WEEKLY_2026_FINAL_RUNNER_CANONICAL_V5",
+      "VERSION": "v6_1_explicit_unvalidated_week1_stake_override"
+    },
+    "local_imports": []
+  },
+  {
+    "file": "run_nfl_weekly_form.py",
+    "purpose": "Alternate wrapper around form, frozen bundle and learned prediction with postflight lineage checks. Its expected predictor version differs from the supplied predictor; see Known gaps.",
+    "build_and_version": {
+      "BUILD_ID": "NFL_WEEKLY_FORM_RUNNER_CANONICAL_V2",
+      "VERSION": "v2_form_v3_frozen_learned_consensus_fail_closed_postflight",
+      "EXPECTED_FORM_BUILD_ID": "NFL_2026_FORM_RATING_CANONICAL_V3",
+      "EXPECTED_FORM_VERSION": "v3_current_structural_prior_asof_opponent_adjusted_form",
+      "EXPECTED_SPREAD_BUILD_ID": "NFL_WEEKLY_LEARNED_CONSENSUS_2026_CANONICAL_V1",
+      "EXPECTED_SPREAD_VERSION": "v1_0_frozen_learned_weights_point_in_time_consensus",
+      "EXPECTED_BUNDLE_BUILD_ID": "NFL_LEARNED_CONSENSUS_2026_CANONICAL_V1",
+      "EXPECTED_BUNDLE_VERSION": "v1_0_2020_2025_frozen_market_free_consensus"
+    },
+    "local_imports": []
+  }
+]

@@ -1,0 +1,9 @@
+name: nfl_archive
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - tesseract
+  - pip:
+      - -r requirements.txt

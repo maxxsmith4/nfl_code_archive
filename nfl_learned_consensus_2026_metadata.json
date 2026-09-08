@@ -1,0 +1,106 @@
+{
+  "build_id": "NFL_LEARNED_CONSENSUS_2026_CANONICAL_V1",
+  "created_at": "2026-09-07T01:46:53+00:00",
+  "deployment_status": "PROSPECTIVE_2026_LIVE_TEST",
+  "frozen_candidate_verification": {
+    "bets": 252,
+    "build_id": "NFL_NONLINEAR_MATCHUP_CONSENSUS_BACKTEST_CANONICAL_V1",
+    "edge_threshold": 2.0,
+    "ensemble": "mean_unit_nonlinear",
+    "losses": 111,
+    "maximum_projection_range": 3.5,
+    "minimum_agreement": 3,
+    "pushes": 7,
+    "version": "v1_0_full_game_market_free_nested_consensus_audit",
+    "wins": 134
+  },
+  "gate": {
+    "edge_threshold": 2.0,
+    "ensemble": "mean_unit_nonlinear",
+    "maximum_projection_range": 3.5,
+    "minimum_agreement": 3,
+    "week18_eligible_by_default": 0,
+    "week1_eligible": 0
+  },
+  "hyperparameters_selected_on_ats": 0,
+  "linear_parameters": {
+    "LEARNED_SLOT_STRUCTURAL": {
+      "inner_validation_mae": 10.641490124546008,
+      "maximum_current_season_weight": 0.65,
+      "ridge_alpha": 1000.0,
+      "target_margin_cap": 35.0,
+      "transition_k": 3.0
+    },
+    "LEARNED_UNIT_STRUCTURAL": {
+      "inner_validation_mae": 10.569882170001646,
+      "maximum_current_season_weight": 0.75,
+      "ridge_alpha": 300.0,
+      "target_margin_cap": 21.0,
+      "transition_k": 3.0
+    }
+  },
+  "market_features_in_projection": 0,
+  "model_sha256": "5c298a2ef0555612525df2fcc0341d4bbb0c19be5dd6226089f2511f9fcbe524",
+  "nonlinear_parameters": {
+    "inner_validation_mae": 10.227671177025378,
+    "l2_regularization": 100.0,
+    "max_leaf_nodes": 15,
+    "rating_alpha": 50.0,
+    "target_margin_cap": 21.0
+  },
+  "probability_calibration": {
+    "mean": 0.9577508944135735,
+    "method": "normal_oof_2022_2025_mean_unit_nonlinear_residual",
+    "rows": 959,
+    "sigma": 13.139162029114491
+  },
+  "research_build_ids": {
+    "learned": "NFL_LEARNED_STRUCTURAL_WEIGHTS_BACKTEST_CANONICAL_V1",
+    "nonlinear": "NFL_NONLINEAR_MATCHUP_CONSENSUS_BACKTEST_CANONICAL_V1"
+  },
+  "season": 2026,
+  "slot_names": [
+    "C",
+    "CB1",
+    "CB2",
+    "DT1",
+    "DT2",
+    "EDGE1",
+    "EDGE2",
+    "FS",
+    "K",
+    "LB1",
+    "LB2",
+    "LB3",
+    "LG",
+    "LS",
+    "LT",
+    "P",
+    "QB1",
+    "RB1",
+    "RG",
+    "RT",
+    "SLOT",
+    "SS",
+    "TE1",
+    "WR1",
+    "WR2",
+    "WR3"
+  ],
+  "structural_inputs_frozen_during_2026": 1,
+  "structural_snapshot_hash": "8ece49f9674a90e368743feac3eb15f0b88b23e648fc878ecbee0d0cd508b49f",
+  "training_games": 1439,
+  "training_seasons": [
+    2020,
+    2021,
+    2022,
+    2023,
+    2024,
+    2025
+  ],
+  "training_week_range": [
+    2,
+    17
+  ],
+  "version": "v1_0_2020_2025_frozen_market_free_consensus"
+}
