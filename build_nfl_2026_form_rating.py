@@ -120,6 +120,8 @@ import sqlalchemy as sql
 SEASON = 2026
 BUILD_ID = "NFL_2026_FORM_RATING_CANONICAL_V3"
 VERSION = "v3_current_structural_prior_asof_opponent_adjusted_form"
+IMPLEMENTATION_VERSION = "v3_1_explicit_zero_week_cutoff"
+SOURCE_RECOVERY_VERSION = "v1_local_current_inputs_and_cached_process_model"
 FEATURE_VERSION = "v2_0_pbp_process_features"
 PROCESS_MODEL_VERSION = "v2_0_2018_2025_process_to_points"
 EXPECTED_STRUCTURAL_POWER_BUILD_ID = (
@@ -297,14 +299,17 @@ def parse_args() -> argparse.Namespace:
         "--through-week",
         type=int,
         default=None,
-        help="Optional regular-season week cutoff.",
+        help=(
+            "Optional regular-season week cutoff; 0 uses only the current "
+            "structural prior."
+        ),
     )
     parser.add_argument(
         "--refresh-preseason-snapshot",
         action="store_true",
         help=(
             "Replace the immutable preseason snapshot. Allowed only when "
-            "no completed 2026 regular-season games are included."
+            "no 2026 regular-season games have completed."
         ),
     )
     parser.add_argument(
@@ -325,7 +330,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Write SQLite tables only.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--current-pbp-path",
+        type=Path,
+        default=None,
+        help="Use an existing 2026 raw play-by-play CSV instead of downloading it.",
+    )
+    parser.add_argument(
+        "--schedule-path",
+        type=Path,
+        default=None,
+        help="Use an existing current-season schedule CSV instead of downloading it.",
+    )
+    args = parser.parse_args()
+    if args.through_week is not None and args.through_week < 0:
+        parser.error("--through-week must be at least 0.")
+    for name in ("current_pbp_path", "schedule_path"):
+        value = getattr(args, name)
+        if value is not None:
+            value = value.expanduser().resolve()
+            if not value.is_file():
+                parser.error(f"--{name.replace('_', '-')} must name an existing CSV file: {value}")
+            setattr(args, name, value)
+    return args
 
 
 def configure_runtime(
@@ -768,8 +795,8 @@ def load_or_create_preseason_snapshot(
 
     if refresh and not allow_refresh:
         raise RuntimeError(
-            "The preseason snapshot cannot be refreshed after completed "
-            "2026 regular-season games are included."
+            "The preseason snapshot cannot be refreshed after any "
+            "2026 regular-season game has completed."
         )
 
     snapshot_exists = table_exists(engine, PRESEASON_SNAPSHOT_TABLE)
@@ -1008,6 +1035,40 @@ def load_schedules(
         ) from database_exc
 
 
+def read_current_source_csv(path: Path, source_kind: str) -> tuple[pd.DataFrame, str]:
+    """Read an explicit current-season input without inventing its data date.
+
+    These are the same raw CSV inputs accepted by the weekly predictor. The
+    existing standardizers and completed-game cutoff filters remain authoritative.
+    An invalid explicit file fails; it never silently falls back to a download.
+    """
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    frame = pd.read_csv(path, low_memory=False)
+    if frame.empty:
+        raise RuntimeError(f"The supplied {source_kind} CSV is empty: {path}")
+    columns = {str(column).lower().strip(): column for column in frame.columns}
+    season_column = columns.get("season")
+    if season_column is None or not pd.to_numeric(
+        frame[season_column], errors="coerce"
+    ).eq(SEASON).any():
+        raise RuntimeError(f"The supplied {source_kind} CSV has no {SEASON} season rows: {path}")
+    return frame, f"csv:{path}"
+
+
+def load_current_schedule(engine, path: Optional[Path] = None) -> tuple[pd.DataFrame, str]:
+    if path is not None:
+        return read_current_source_csv(path, "schedule")
+    return load_schedules(engine, [SEASON])
+
+
+def load_current_pbp(path: Optional[Path] = None) -> tuple[pd.DataFrame, str]:
+    if path is not None:
+        return read_current_source_csv(path, "play-by-play")
+    return load_pbp_for_season(SEASON)
+
+
 def standardize_schedules(
     raw: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -1194,8 +1255,8 @@ def filter_schedule_as_of(
     mask = frame["completed"].eq(1)
 
     if through_week is not None:
-        if through_week < 1:
-            raise RuntimeError("--through-week must be at least 1.")
+        if through_week < 0:
+            raise RuntimeError("--through-week must be at least 0.")
         mask &= frame["week"].le(int(through_week))
 
     # Completed games with a valid date must be no later than the cutoff.
@@ -2021,6 +2082,20 @@ def load_or_build_historical_features(
     )
 
 
+def load_available_process_model(engine) -> tuple[pd.DataFrame, str, str]:
+    """Reuse a validated fitted model before requesting unused historical data."""
+    if table_exists(engine, PROCESS_MODEL_TABLE):
+        cached = read_table(engine, PROCESS_MODEL_TABLE)
+        if model_cache_is_valid(cached):
+            LOGGER.info("[FORM] Loaded cached process model; historical schedule not required.")
+            return cached, "sqlite_cache", "not_required_cached_process_model"
+    raw_schedule, schedule_source = load_schedules(engine, CALIBRATION_SEASONS)
+    model, model_source = load_or_fit_process_model(
+        engine, standardize_schedules(raw_schedule)
+    )
+    return model, model_source, schedule_source
+
+
 def model_cache_is_valid(
     model: pd.DataFrame,
 ) -> bool:
@@ -2719,10 +2794,12 @@ def build_no_games_output(
     schedule_source: str,
     snapshot_source: str,
     as_of_date: pd.Timestamp,
+    through_week: Optional[int] = None,
 ) -> pd.DataFrame:
     frame = preseason.copy()
 
-    frame["through_week"] = 0
+    # Report the requested cutoff even when it contains no completed games.
+    frame["through_week"] = 0 if through_week is None else int(through_week)
     frame["games_played"] = 0
     frame["process_games_played"] = 0
     frame["result_games_played"] = 0
@@ -2797,6 +2874,7 @@ def build_live_form_output(
     process_model_source: str,
     snapshot_source: str,
     as_of_date: pd.Timestamp,
+    through_week: Optional[int] = None,
 ) -> pd.DataFrame:
     season_process, season_process_hfa = solve_srs(
         games=game_audit,
@@ -2866,7 +2944,10 @@ def build_live_form_output(
     ).clip(upper=MAX_CURRENT_SEASON_WEIGHT)
 
     frame = preseason.copy().set_index("team")
-    frame["through_week"] = int(completed["week"].max())
+    # A cutoff can include a week with no games; it remains the run's cutoff.
+    frame["through_week"] = (
+        int(completed["week"].max()) if through_week is None else int(through_week)
+    )
     frame["games_played"] = games_played
     frame["result_games_played"] = games_played
     frame["process_games_played"] = process_games_played
@@ -3202,6 +3283,7 @@ def print_report(
     LOGGER.info("=" * 110)
     LOGGER.info("[FORM] Build ID: %s", BUILD_ID)
     LOGGER.info("[FORM] Version: %s", VERSION)
+    LOGGER.info("[FORM] Implementation: %s", IMPLEMENTATION_VERSION)
     LOGGER.info("[FORM] Through week: %s", int(form["through_week"].max()))
     LOGGER.info(
         "[FORM] Completed regular-season games: %s",
@@ -3295,6 +3377,7 @@ def main() -> int:
     as_of_date = parse_as_of_date(args.as_of_date)
 
     LOGGER.info("[FORM] Building canonical 2026 NFL form rating")
+    LOGGER.info("[FORM] Source recovery: %s", SOURCE_RECOVERY_VERSION)
     LOGGER.info("[FORM] Build ID: %s", BUILD_ID)
     LOGGER.info("[FORM] Version: %s", VERSION)
     LOGGER.info("[FORM] Database: %s", DB_PATH)
@@ -3308,7 +3391,7 @@ def main() -> int:
         drop_table_if_exists(engine, PROCESS_MODEL_TABLE)
         LOGGER.info("[FORM] Historical process cache/model cleared.")
 
-    raw_current_schedule, schedule_source = load_schedules(engine, [SEASON])
+    raw_current_schedule, schedule_source = load_current_schedule(engine, args.schedule_path)
     current_schedule = standardize_schedules(raw_current_schedule)
     current_schedule = current_schedule[current_schedule["season"].eq(SEASON)].copy()
     completed_current = filter_schedule_as_of(
@@ -3320,7 +3403,8 @@ def main() -> int:
     preseason, snapshot_source = load_or_create_preseason_snapshot(
         engine,
         refresh=args.refresh_preseason_snapshot,
-        allow_refresh=completed_current.empty,
+        # A historical date or week cutoff must not reopen snapshot refreshes.
+        allow_refresh=not current_schedule["completed"].eq(1).any(),
     )
     teams = sorted(preseason["team"].unique().tolist())
 
@@ -3335,17 +3419,14 @@ def main() -> int:
             schedule_source=schedule_source,
             snapshot_source=snapshot_source,
             as_of_date=as_of_date,
+            through_week=args.through_week,
         )
         game_audit = empty_game_audit()
         team_game_audit = empty_team_game_audit()
 
         if args.prepare_process_model:
-            raw_historical_schedule, historical_schedule_source = load_schedules(
-                engine, CALIBRATION_SEASONS
-            )
-            historical_schedules = standardize_schedules(raw_historical_schedule)
-            process_model, process_model_source = load_or_fit_process_model(
-                engine, historical_schedules
+            process_model, process_model_source, historical_schedule_source = (
+                load_available_process_model(engine)
             )
             LOGGER.info(
                 "[FORM] Preseason process model prepared via %s; schedules=%s",
@@ -3383,7 +3464,7 @@ def main() -> int:
         completed_current["game_id"].nunique(),
     )
 
-    raw_current_pbp, pbp_source = load_pbp_for_season(SEASON)
+    raw_current_pbp, pbp_source = load_current_pbp(args.current_pbp_path)
     current_pbp = standardize_pbp(raw_current_pbp, SEASON)
     current_pbp = filter_pbp_to_completed_games(current_pbp, completed_current)
     if current_pbp.empty:
@@ -3394,12 +3475,8 @@ def main() -> int:
 
     team_games = build_team_game_features(current_pbp, completed_current)
 
-    raw_historical_schedule, historical_schedule_source = load_schedules(
-        engine, CALIBRATION_SEASONS
-    )
-    historical_schedules = standardize_schedules(raw_historical_schedule)
-    process_model, process_model_source = load_or_fit_process_model(
-        engine, historical_schedules
+    process_model, process_model_source, historical_schedule_source = (
+        load_available_process_model(engine)
     )
     team_games = apply_process_model(team_games, process_model)
 
@@ -3437,6 +3514,7 @@ def main() -> int:
         process_model_source=process_model_source,
         snapshot_source=snapshot_source,
         as_of_date=as_of_date,
+        through_week=args.through_week,
     )
 
     team_game_columns = list(empty_team_game_audit().columns)

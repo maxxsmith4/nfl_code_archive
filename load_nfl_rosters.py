@@ -10,6 +10,7 @@ Audit outputs
 SQLite/CSV: nfl_rosters_2026_load_audit
 SQLite/CSV: nfl_rosters_2026_duplicate_id_audit
 SQLite/CSV: nfl_rosters_2026_identity_issues
+SQLite/CSV: nfl_rosters_2026_refresh_status
 
 Design rules
 ------------
@@ -19,15 +20,20 @@ Design rules
 4. Duplicate/conflicting IDs are audited rather than silently discarded.
 5. The standardized raw roster remains a source table; canonical row selection
    belongs in build_nfl_player_master.py.
+6. Only transport/dependency failures may reuse a complete roster imported
+   within 24 hours. Reuse never changes the original import date or load audits.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+from importlib import import_module
 import logging
 import re
+import socket
 import sys
+import urllib.error
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -36,7 +42,7 @@ import sqlalchemy as sql
 
 
 SEASON = 2026
-VERSION = "v2_0_identity_preserving_roster"
+VERSION = "v2_1_validated_recent_roster_recovery"
 
 DEFAULT_PROJECT_ROOT = Path(
     r"C:\Users\maxxs\Downloads\Football Files\nfl_model"
@@ -49,6 +55,8 @@ OUTPUT_TABLE = "nfl_rosters_2026_raw"
 LOAD_AUDIT_TABLE = "nfl_rosters_2026_load_audit"
 DUPLICATE_AUDIT_TABLE = "nfl_rosters_2026_duplicate_id_audit"
 IDENTITY_ISSUE_TABLE = "nfl_rosters_2026_identity_issues"
+REFRESH_STATUS_TABLE = "nfl_rosters_2026_refresh_status"
+MAX_CACHE_AGE_HOURS = 24.0
 
 ID_COLUMNS = [
     "gsis_id",
@@ -207,6 +215,44 @@ def coalesce_columns(frame: pd.DataFrame, candidates: Iterable[str]) -> pd.Serie
     return result
 
 
+class RosterSourceUnavailable(RuntimeError):
+    """An identified transport/dependency failure, eligible for recent-cache recovery."""
+
+
+def is_transport_failure(exc: BaseException) -> bool:
+    """Recognize network failures without treating arbitrary loader bugs as outages."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (urllib.error.URLError, socket.gaierror,
+                                ConnectionError, TimeoutError)):
+            return True
+        module = type(current).__module__
+        name = type(current).__name__
+        if module.startswith(("requests.", "urllib3.", "httpx.")) and name in {
+            "ConnectionError", "ConnectTimeout", "ReadTimeout", "Timeout",
+            "HTTPError", "HTTPStatusError", "SSLError", "ProxyError",
+            "NewConnectionError", "MaxRetryError", "NameResolutionError",
+            "ConnectError", "ReadError", "RemoteProtocolError",
+        }:
+            return True
+        # nflreadpy releases may wrap the underlying requests exception in
+        # RuntimeError. These narrow transport markers cover the reported
+        # Windows DNS error, without classifying schema/parse errors as outages.
+        message = str(current).lower()
+        if isinstance(current, RuntimeError) and any(marker in message for marker in (
+            "getaddrinfo failed", "name or service not known",
+            "temporary failure in name resolution", "failed to establish a new connection",
+            "connection timed out", "connection refused", "max retries exceeded",
+            "http error 403", "http error 404", "403 client error", "404 client error",
+            "429 client error", "500 server error", "502 server error", "503 server error",
+        )):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def load_rosters(season: int, offline_csv: Optional[Path]) -> tuple[pd.DataFrame, str]:
     if offline_csv is not None:
         if not offline_csv.exists():
@@ -214,24 +260,131 @@ def load_rosters(season: int, offline_csv: Optional[Path]) -> tuple[pd.DataFrame
         return pd.read_csv(offline_csv, low_memory=False), f"csv:{offline_csv}"
 
     errors: list[str] = []
+    # nfl_data_py documents import_seasonal_rosters; import_rosters does not
+    # exist. nflreadpy remains primary; installing the deprecated fallback is
+    # not required when it is absent.
+    for module_name, function_name in (
+        ("nflreadpy", "load_rosters"),
+        ("nfl_data_py", "import_seasonal_rosters"),
+    ):
+        label = f"{module_name}.{function_name}"
+        try:
+            module = import_module(module_name)
+        except ImportError as exc:
+            errors.append(f"{label}: dependency unavailable: {exc}")
+            continue
+        loader = getattr(module, function_name, None)
+        if not callable(loader):
+            errors.append(f"{label}: installed module has no callable {function_name}")
+            continue
+        try:
+            raw = loader([season])
+            if hasattr(raw, "to_pandas"):
+                raw = raw.to_pandas()
+        except ImportError as exc:
+            errors.append(f"{label}: dependency unavailable: {exc}")
+            continue
+        except Exception as exc:
+            if not is_transport_failure(exc):
+                raise
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            continue
+        # Conversion/validation errors are programming or source-data errors,
+        # and must not silently switch to an older cache.
+        return pd.DataFrame(raw), label
+
+    raise RosterSourceUnavailable("Unable to fetch NFL rosters. " + " | ".join(errors))
+
+
+def timestamp_utc(value: Any) -> dt.datetime:
+    """Interpret original timezone-naive imports in this machine's local zone."""
+    parsed = pd.Timestamp(value)
+    if pd.isna(parsed):
+        raise ValueError("Missing roster import timestamp")
+    stamp = parsed.to_pydatetime()
+    # datetime.astimezone() applies the computer's timezone/DST at that date.
+    return stamp.astimezone(dt.timezone.utc)
+
+
+def validate_roster(roster: pd.DataFrame, season: int, *,
+                    now: Optional[dt.datetime] = None,
+                    require_recent: bool = False) -> tuple[dt.datetime, float]:
+    """Validate normalized identities, complete team coverage, and import provenance."""
+    missing = sorted(set(FINAL_COLUMNS) - set(roster.columns))
+    if missing:
+        raise ValueError(f"Roster schema missing canonical columns: {missing}")
+    if roster.empty:
+        raise ValueError("Roster contains zero rows")
+    seasons = pd.to_numeric(roster["season"], errors="coerce")
+    if seasons.isna().any() or not seasons.eq(season).all():
+        raise ValueError(f"Roster season must be {season} on every row")
+    teams = roster["team"].map(clean_scalar)
+    if set(teams.dropna()) != NFL_TEAMS or teams.isna().any():
+        raise ValueError(f"Roster must contain exactly all 32 canonical NFL teams; "
+                         f"missing={sorted(NFL_TEAMS - set(teams.dropna()))}")
+    for column in ("player_name", "position", "source", "roster_version"):
+        if roster[column].map(clean_scalar).isna().any():
+            raise ValueError(f"Roster has missing {column}")
+    gsis = roster["gsis_id"].map(clean_id)
+    player_ids = roster["player_id"].map(clean_id)
+    if not gsis.fillna("").equals(player_ids.fillna("")):
+        raise ValueError("Roster identity integrity failure: player_id differs from gsis_id")
+    if not gsis.dropna().str.fullmatch(r"\d{2}-\d{7}").all():
+        raise ValueError("Roster identity integrity failure: malformed GSIS identifier")
+    # Preserve the original workflow's audited, occasional missing GSIS row.
+    # A provider without usable canonical identities is not a usable cache.
+    if gsis.notna().mean() < 0.95:
+        raise ValueError("Roster is missing canonical GSIS identities for over 5% of rows")
+    usable = pd.DataFrame({"team": teams, "gsis_id": gsis}).dropna()
+    counts = usable.groupby("team")["gsis_id"].nunique()
+    incomplete = counts[counts < 45].to_dict()
+    if len(counts) != 32 or incomplete:
+        raise ValueError(f"Roster coverage incomplete: require at least 45 unique GSIS IDs per team; {incomplete}")
+    # Same player on multiple historical transaction rows is permitted. Reusing
+    # a canonical ID for distinct names is a corrupt identity map.
+    names = roster["player_name"].map(lambda x: re.sub(r"[^a-z0-9]", "", str(x).lower()))
+    mapping = pd.DataFrame({"gsis_id": gsis, "name": names}).dropna()
+    conflicts = mapping.groupby("gsis_id")["name"].nunique()
+    if conflicts.gt(1).any():
+        raise ValueError("Roster identity integrity failure: a GSIS ID maps to conflicting names")
+    row_numbers = pd.to_numeric(roster["source_row_number"], errors="coerce")
+    if row_numbers.isna().any() or row_numbers.le(0).any() or row_numbers.duplicated().any():
+        raise ValueError("Roster source_row_number is missing, nonpositive or duplicated")
     try:
-        import nflreadpy as nfl  # type: ignore
+        timestamps = roster["date_imported"].map(timestamp_utc)
+    except Exception as exc:
+        raise ValueError(f"Roster import timestamp is invalid: {exc}") from exc
+    checked_at = now or dt.datetime.now(dt.timezone.utc)
+    checked_at = checked_at.astimezone(dt.timezone.utc)
+    if any(stamp > checked_at for stamp in timestamps):
+        raise ValueError("Roster import timestamp is in the future")
+    original_as_of = min(timestamps)
+    age_hours = (checked_at - original_as_of).total_seconds() / 3600.0
+    if require_recent and age_hours > MAX_CACHE_AGE_HOURS:
+        raise ValueError(f"Roster cache is {age_hours:.2f} hours old; maximum is {MAX_CACHE_AGE_HOURS:g} hours")
+    return original_as_of, age_hours
 
-        raw = nfl.load_rosters([season])
-        if hasattr(raw, "to_pandas"):
-            raw = raw.to_pandas()
-        return pd.DataFrame(raw), "nflreadpy.load_rosters"
-    except Exception as exc:  # pragma: no cover - external dependency
-        errors.append(f"nflreadpy: {exc}")
 
-    try:
-        import nfl_data_py as nfl  # type: ignore
+def read_recent_cache(engine, season: int, now: dt.datetime) -> tuple[pd.DataFrame, dt.datetime, float]:
+    if not sql.inspect(engine).has_table(OUTPUT_TABLE):
+        raise ValueError(f"No existing {OUTPUT_TABLE} table")
+    with engine.connect() as connection:
+        roster = pd.read_sql_query(sql.text(f'SELECT * FROM "{OUTPUT_TABLE}"'), connection)
+    original_as_of, age_hours = validate_roster(roster, season, now=now, require_recent=True)
+    return roster, original_as_of, age_hours
 
-        return pd.DataFrame(nfl.import_rosters([season])), "nfl_data_py.import_rosters"
-    except Exception as exc:  # pragma: no cover - external dependency
-        errors.append(f"nfl_data_py: {exc}")
 
-    raise RuntimeError("Unable to load NFL rosters. " + " | ".join(errors))
+def refresh_status(season: int, status: str, attempted_at: dt.datetime, *,
+                   original_as_of: Optional[dt.datetime] = None,
+                   age_hours: Optional[float] = None, source: str = "",
+                   error: str = "", roster_rows: int = 0) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "season": season, "status": status,
+        "roster_as_of_utc": original_as_of.isoformat() if original_as_of else "",
+        "attempted_at_utc": attempted_at.isoformat(), "age_hours": age_hours,
+        "source": source, "error": error, "roster_rows": roster_rows,
+        "roster_version": VERSION,
+    }])
 
 
 def standardize_rosters(raw: pd.DataFrame, season: int, source_name: str) -> pd.DataFrame:
@@ -409,33 +562,68 @@ def main() -> int:
 
     logger.info("[ROSTERS] Season: %s", args.season)
     logger.info("[ROSTERS] Database: %s", args.db_path)
-    raw, source_name = load_rosters(args.season, args.input_csv)
-    logger.info("[ROSTERS] Loaded %s source rows via %s", f"{len(raw):,}", source_name)
-
-    roster = standardize_rosters(raw, args.season, source_name)
-    duplicate_audit = build_duplicate_audit(roster)
-    issues = roster[roster["identity_issue_flag"].ne("ok")].copy()
-    load_audit = build_load_audit(roster, source_name)
-
-    if int(load_audit.iloc[0]["official_teams"]) != 32:
-        missing = sorted(NFL_TEAMS - set(roster["team"].dropna()))
-        raise RuntimeError(
-            "Roster does not contain all 32 NFL teams. "
-            f"Found={int(load_audit.iloc[0]['official_teams'])}; missing={missing}"
-        )
-
+    if args.season != SEASON:
+        raise ValueError(f"This canonical loader writes {SEASON} tables; --season must be {SEASON}")
+    attempted_at = dt.datetime.now(dt.timezone.utc)
     engine = sql.create_engine(f"sqlite:///{args.db_path}", pool_pre_ping=True)
-    save_frame(engine, output_dir, OUTPUT_TABLE, roster)
-    save_frame(engine, output_dir, LOAD_AUDIT_TABLE, load_audit)
-    save_frame(engine, output_dir, DUPLICATE_AUDIT_TABLE, duplicate_audit)
-    save_frame(engine, output_dir, IDENTITY_ISSUE_TABLE, issues)
+    try:
+        try:
+            raw, source_name = load_rosters(args.season, args.input_csv)
+        except RosterSourceUnavailable as source_error:
+            try:
+                roster, original_as_of, age_hours = read_recent_cache(
+                    engine, args.season, dt.datetime.now(dt.timezone.utc))
+            except Exception as cache_error:
+                raise RosterSourceUnavailable(
+                    f"{source_error} | Existing roster cannot be reused: {cache_error}. "
+                    "No current roster was invented or re-dated. Restore access to github.com "
+                    "(DNS, internet connection, or proxy settings), then rerun. "
+                    "A valid local --input-csv can also be imported explicitly."
+                ) from source_error
+            source_name = "|".join(sorted(set(roster["source"].dropna().astype(str))))
+            status = refresh_status(args.season, "REUSED_RECENT_CACHE", attempted_at,
+                                    original_as_of=original_as_of, age_hours=age_hours,
+                                    source=source_name, error=str(source_error), roster_rows=len(roster))
+            save_frame(engine, output_dir, REFRESH_STATUS_TABLE, status)
+            logger.warning("[ROSTERS] REUSED_RECENT_CACHE: %s existing rows, originally imported %s, "
+                           "age %.2f hours (limit %.0f). Original roster and load audits are unchanged.",
+                           f"{len(roster):,}", original_as_of.isoformat(), age_hours, MAX_CACHE_AGE_HOURS)
+            logger.warning("[ROSTERS] Refresh failed: %s", source_error)
+            return 0
 
-    logger.info("[ROSTERS] Saved %s rows to %s", f"{len(roster):,}", OUTPUT_TABLE)
-    logger.info("[ROSTERS] Unique GSIS IDs: %s", f"{roster['gsis_id'].nunique(dropna=True):,}")
-    logger.info("[ROSTERS] Missing GSIS IDs: %s", f"{roster['gsis_id'].isna().sum():,}")
-    logger.info("[ROSTERS] Duplicate audit rows: %s", f"{len(duplicate_audit):,}")
-    logger.info("[ROSTERS] Identity issue rows: %s", f"{len(issues):,}")
-    return 0
+        logger.info("[ROSTERS] Loaded %s source rows via %s", f"{len(raw):,}", source_name)
+        if "season" in raw.columns:
+            source_seasons = pd.to_numeric(raw["season"], errors="coerce")
+            if source_seasons.isna().any() or not source_seasons.eq(args.season).all():
+                raise ValueError(f"Roster source includes missing/invalid/wrong season; expected {args.season}")
+        roster = standardize_rosters(raw, args.season, source_name)
+        original_as_of, age_hours = validate_roster(roster, args.season)
+        duplicate_audit = build_duplicate_audit(roster)
+        issues = roster[roster["identity_issue_flag"].ne("ok")].copy()
+        load_audit = build_load_audit(roster, source_name)
+
+        save_frame(engine, output_dir, OUTPUT_TABLE, roster)
+        save_frame(engine, output_dir, LOAD_AUDIT_TABLE, load_audit)
+        save_frame(engine, output_dir, DUPLICATE_AUDIT_TABLE, duplicate_audit)
+        save_frame(engine, output_dir, IDENTITY_ISSUE_TABLE, issues)
+        save_frame(engine, output_dir, REFRESH_STATUS_TABLE,
+                   refresh_status(args.season, "LIVE", attempted_at, original_as_of=original_as_of,
+                                  age_hours=age_hours, source=source_name, roster_rows=len(roster)))
+
+        logger.info("[ROSTERS] LIVE: Saved %s rows to %s", f"{len(roster):,}", OUTPUT_TABLE)
+        logger.info("[ROSTERS] Unique GSIS IDs: %s", f"{roster['gsis_id'].nunique(dropna=True):,}")
+        logger.info("[ROSTERS] Missing GSIS IDs: %s", f"{roster['gsis_id'].isna().sum():,}")
+        logger.info("[ROSTERS] Duplicate audit rows: %s", f"{len(duplicate_audit):,}")
+        logger.info("[ROSTERS] Identity issue rows: %s", f"{len(issues):,}")
+        return 0
+    except Exception as exc:
+        save_frame(engine, output_dir, REFRESH_STATUS_TABLE,
+                   refresh_status(args.season, "FAILED", attempted_at,
+                                  error=f"{type(exc).__name__}: {exc}"))
+        logger.error("[ROSTERS] FAILED: %s", exc)
+        raise
+    finally:
+        engine.dispose()
 
 
 if __name__ == "__main__":

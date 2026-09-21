@@ -17,6 +17,10 @@ qualifying Week 1 bets while preserving an unvalidated-scope audit label.
 This script replaces the legacy structural/HFA branch.  It deliberately keeps
 the established schedule, market, price, history-table, and CSV contracts so
 the separate Circa engine is not modified.
+
+Automatic roster review appends one scenario for all positions, including QB,
+using refreshed depth charts and injuries. No manual QB CSV is read. Existing
+projection, probability, gate and stake fields continue to use the baseline.
 """
 
 from __future__ import annotations
@@ -43,11 +47,15 @@ import backtest_nfl_nonlinear_matchup_consensus as nonlinear
 import build_backtest_nfl_weekly_matchup_residual as matchup_history
 import build_nfl_learned_consensus_2026 as frozen
 import predict_nfl_weekly_power_spreads_2026 as legacy
+import nfl_roster_review_2026 as roster_review
 
 
 SEASON = 2026
 BUILD_ID = "NFL_WEEKLY_LEARNED_CONSENSUS_2026_CANONICAL_V1"
 VERSION = "v1_3_readable_execution_csv_scope_fix"
+EXECUTION_CSV_VERSION = "v1_7_automatic_roster_review"
+ROSTER_REVIEW_VERSION = roster_review.VERSION
+MARKET_EXECUTION_VERSION = "v1_5_explicit_market_file_authoritative"
 MODEL_VARIANT = "LEARNED_STRUCTURAL_NONLINEAR_CONSENSUS"
 
 EXPECTED_BUNDLE_BUILD_ID = frozen.BUILD_ID
@@ -408,7 +416,8 @@ def build_personnel(
     week: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     if week == 1:
-        rows = [{"team": team, "last_completed_game_week": np.nan} for team in teams]
+        rows = [{"team": team, "last_completed_game_week": np.nan,
+                 "last_game_qb_name": "", "last_game_qb_player_id": ""} for team in teams]
         for row in rows:
             for name in (
                 "qb_recent_epa",
@@ -460,6 +469,8 @@ def build_personnel(
         row: dict[str, Any] = {
             "team": team,
             "last_completed_game_week": int(current["week"]),
+            "last_game_qb_name": str(current["qb_name"]),
+            "last_game_qb_player_id": str(pbp_key),
             "qb_recent_epa": float(qb_epa),
             "qb_recent_cpoe": float(qb_cpoe) if np.isfinite(qb_cpoe) else np.nan,
             "qb_recent_games": int(qb_games),
@@ -548,6 +559,10 @@ def build_live_matchup_features(
             "away_current_games": int(away_rating["current_games"]),
             "home_last_completed_game_week": personnel_index.loc[home, "last_completed_game_week"],
             "away_last_completed_game_week": personnel_index.loc[away, "last_completed_game_week"],
+            "home_last_game_qb_name": personnel_index.loc[home, "last_game_qb_name"],
+            "away_last_game_qb_name": personnel_index.loc[away, "last_game_qb_name"],
+            "home_last_game_qb_player_id": personnel_index.loc[home, "last_game_qb_player_id"],
+            "away_last_game_qb_player_id": personnel_index.loc[away, "last_game_qb_player_id"],
         }
         for metric, (_, higher_is_good) in matchup_history.METRIC_SPECS.items():
             league_mean = float(home_rating[f"{metric}_league_mean"])
@@ -726,6 +741,10 @@ def generate_independent_projections(
     )
     allowed = [*details["feature_names"]]
     output["nonlinear_feature_hash"] = feature_hash(nonlinear_features, allowed)
+    output = roster_review.apply_review(
+        connection, structural, nonlinear_features, output, bundle,
+        args, learned, frozen,
+    )
     return output, matchup_audit, qb_audit
 
 
@@ -1087,6 +1106,7 @@ def build_execution_csv(frame: pd.DataFrame) -> pd.DataFrame:
         "decision",
         "selected_market_line",
         "selected_spread_price",
+        "model_selected_cover_probability",
         "fractional_kelly_recommended_stake",
     }
     missing = sorted(required - set(frame.columns))
@@ -1195,6 +1215,9 @@ def build_execution_csv(frame: pd.DataFrame) -> pd.DataFrame:
             "wager_price": pd.to_numeric(
                 frame["selected_spread_price"], errors="coerce"
             ).astype("Int64"),
+            "model_cover_probability": pd.to_numeric(
+                frame["model_selected_cover_probability"], errors="coerce"
+            ).map(lambda value: f"{value:.2%}" if pd.notna(value) else ""),
             "recommended_stake": pd.to_numeric(
                 frame["fractional_kelly_recommended_stake"], errors="coerce"
             ).fillna(0.0).round(0),
@@ -1204,6 +1227,7 @@ def build_execution_csv(frame: pd.DataFrame) -> pd.DataFrame:
     )
     if len(output) != len(frame):
         raise RuntimeError("Execution CSV row count does not reconcile.")
+    output = roster_review.append_execution_columns(output, frame, legacy.spread_label)
     return output
 
 
@@ -1218,6 +1242,45 @@ def write_execution_csv(
     for path in (current_csv, snapshot_csv):
         if path is not None:
             output.to_csv(path, index=False, encoding="utf-8-sig")
+    print(f"[LEARNED_PREDICT] Execution CSV: {EXECUTION_CSV_VERSION}")
+
+
+def attach_execution_market(
+    schedule: pd.DataFrame,
+    market_path: Path | None,
+    preference: str,
+    week: int,
+) -> pd.DataFrame:
+    """Attach explicit execution odds without reviving older schedule prices.
+
+    The independent forecast keeps every scheduled game.  An explicit market
+    file is authoritative for the requested week's execution odds, including
+    when the loader omits a game that has started or has no eligible line.
+    Clearing only the copied market fields preserves the source schedule and
+    prevents the legacy merge's non-null fallback from recreating that line.
+    """
+    base = schedule.copy()
+    if market_path is not None:
+        target = pd.to_numeric(base["week"], errors="coerce").eq(week)
+        for column in (
+            "opening_market_home_margin",
+            "current_market_home_margin",
+            "market_home_price",
+            "market_away_price",
+            "sportsbook",
+            "bookmaker_key",
+            "market_source",
+            "market_retrieved_at_utc",
+            "market_last_update_utc",
+            "market_line_age_minutes",
+            "market_stale_flag",
+            "source_priority_rank",
+            "circa_line_flag",
+        ):
+            if column in base.columns:
+                base.loc[target, column] = np.nan
+    merged = legacy.merge_market_source(base, market_path)
+    return legacy.choose_market_line(merged, preference)
 
 
 def main() -> int:
@@ -1247,9 +1310,8 @@ def main() -> int:
             connection, model_games, bundle, args
         )
 
-        market_schedule = legacy.merge_market_source(schedule, args.market_path)
-        market_schedule = legacy.choose_market_line(
-            market_schedule, args.market_line_preference
+        market_schedule = attach_execution_market(
+            schedule, args.market_path, args.market_line_preference, week
         )
         games = market_schedule[market_schedule["week"].eq(week)].copy()
         manual = legacy.load_manual_adjustments(connection, week)
@@ -1294,6 +1356,11 @@ def main() -> int:
                     "week": week,
                     "build_id": BUILD_ID,
                     "version": VERSION,
+                    "market_execution_version": MARKET_EXECUTION_VERSION,
+                    "roster_review_version": ROSTER_REVIEW_VERSION,
+                    "roster_review_flagged_games": int(predictions["roster_review_flag"].sum()),
+                    "roster_adjusted_scenario_games": int(predictions["roster_adjustment_status"].eq("CURRENT_DEPTH_SCENARIO").sum()),
+                    "roster_scenario_used_for_staking": 0,
                     "model_variant": MODEL_VARIANT,
                     "status": "SUCCESS",
                     "deployment_status": bundle["deployment_status"],
@@ -1345,6 +1412,7 @@ def main() -> int:
             connection, predictions, audit, args.project_root, args.no_csv
         )
         write_execution_csv(predictions, current_csv, snapshot_csv)
+        roster_review.write_audit(predictions, current_csv, snapshot_csv)
         print_report(predictions, matchup_audit)
         print(f"[LEARNED_PREDICT] Saved {len(predictions)} rows to {OUTPUT_TABLE}")
         if current_csv is not None:

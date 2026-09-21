@@ -6,10 +6,11 @@ Required SQLite inputs
 - nfl_player_performance_inputs_2026
 - nfl_player_master_2026
 
-Persistent authoritative inputs
---------------------------------
-- nfl_projected_qb_starters_2026
-- nfl_projected_ol_starters_2026 (refreshed from ESPN; manual rows preserved)
+Automatic availability inputs
+-----------------------------
+- ESPN current rosters, injury statuses and ordered depth charts for all teams
+- QB and OL starter tables are refreshed from the first available source player
+- No manual QB CSV is required or read
 
 Outputs
 -------
@@ -18,7 +19,8 @@ Outputs
 
 Design rules
 ------------
-1. The validated player-performance table is the canonical player population.
+1. Historical player-performance grades are retained; identified new players
+   without a grade enter at replacement level and are flagged downstream.
 2. Performance and roster/master fields are joined once by canonical player_id.
 3. Player quality, availability and depth-order evidence remain separate.
 4. OL performance consumes the PFF blocking-talent grade from the canonical
@@ -26,8 +28,7 @@ Design rules
 5. LT/LG/C/RG/RT assignments come from a position-specific current depth chart;
    player quality and historical durability never invent starter assignments.
 6. Reserve/injured/developmental roster statuses cannot be projected starters.
-7. The persistent QB starter table remains authoritative and is never silently
-   overwritten after it has been created.
+7. The current source selects QB and OL starters automatically on every refresh.
 8. No empirical mean/std normalization is performed in this file.
 """
 
@@ -49,10 +50,12 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+import nfl_live_depth_2026 as live_depth
 
 SEASON = 2026
 BUILD_ID = "NFL_PROJECTED_DEPTH_CHART_2026_CANONICAL_V5"
-VERSION = "v5_pff_ol_talent_no_second_shrink_authoritative_starters"
+VERSION = "v5_4_unique_ol_starter_assignment"
+SOURCE_UNAVAILABLE_EXIT_CODE = 20
 
 DEFAULT_PROJECT_ROOT = Path(r"C:\Users\maxxs\Downloads\Football Files\nfl_model")
 DEFAULT_DB_PATH = Path(r"C:\Users\maxxs\DataGripProjects\NFL\identifier.sqlite")
@@ -168,9 +171,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-root", type=Path, default=DEFAULT_PROJECT_ROOT)
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
-        "--no-refresh-ol-starters",
+        "--no-refresh-ol-starters", "--no-refresh-depth-sources",
         action="store_true",
-        help=f"Use the complete cached {OL_STARTER_TABLE} table instead of refreshing ESPN.",
+        help="Use the audited all-position source cache (maximum age 24 hours).",
     )
     parser.add_argument("--espn-timeout", type=float, default=30.0)
     parser.add_argument("--no-csv", action="store_true")
@@ -602,7 +605,10 @@ def prepare_depth(
     if missing:
         raise RuntimeError(f"{PERFORMANCE_TABLE} missing columns: {missing}")
 
-    roster_fields = [c for c in ["player_id", "status", "years_exp", "draft_number", "rookie_year", "birth_date"] if c in master.columns]
+    live_fields = ["original_roster_status", "live_depth_rank", "live_source_starter", "live_preferred_slot",
+                   "live_injury_status", "live_uncertain", "live_injury_reported_at", "live_source_timestamp",
+                   "live_fetched_at_utc", "identity_match_method"]
+    roster_fields = [c for c in ["player_id", "status", "years_exp", "draft_number", "rookie_year", "birth_date", *live_fields] if c in master.columns]
     roster = master[roster_fields].copy()
     roster = roster.rename(columns={c: f"roster_{c}" for c in roster_fields if c != "player_id"})
     out = perf.merge(roster, on="player_id", how="left", validate="one_to_one")
@@ -618,6 +624,12 @@ def prepare_depth(
     out["years_exp"] = numeric(out, "roster_years_exp", 0.0)
     out["draft_number"] = numeric(out, "roster_draft_number", np.nan)
     out["likely_unavailable"] = out["status"].map(likely_unavailable)
+    for column in live_fields:
+        original = f"roster_{column}"
+        if column in {"live_depth_rank", "live_source_starter", "live_uncertain"}:
+            out[column] = numeric(out, original, 999.0 if column == "live_depth_rank" else 0.0)
+        else:
+            out[column] = out.get(original, pd.Series("", index=out.index)).map(clean_scalar)
 
     out["performance_grade"] = numeric(out, "performance_input_score", 0.0).clip(0, 100)
     out["replacement_baseline"] = numeric(out, "replacement_baseline", 30.0).clip(0, 100)
@@ -750,7 +762,8 @@ def compatible(role: str, allowed: Iterable[str]) -> bool:
 def assign_starters_and_ranks(depth: pd.DataFrame) -> pd.DataFrame:
     out = depth.copy()
     out["role_rank_group"] = out["canonical_role"].map(role_rank_key)
-    out = out.sort_values(["team", "role_rank_group", "depth_order_score", "player_id"], ascending=[True, True, False, True])
+    out = out.sort_values(["team", "role_rank_group", "likely_unavailable", "live_source_starter", "live_depth_rank", "depth_order_score", "player_id"],
+                          ascending=[True, True, True, False, True, False, True])
     out["depth_rank"] = out.groupby(["team", "role_rank_group"]).cumcount() + 1
     out["is_projected_starter"] = 0
     out["starter_slot"] = ""
@@ -777,7 +790,10 @@ def assign_starters_and_ranks(depth: pd.DataFrame) -> pd.DataFrame:
                         f"{team} {slot_name}: expected exactly one authoritative OL starter, found {len(auth)}"
                     )
                 candidates = auth
-            candidates = candidates.sort_values(["depth_order_score", "position_confidence_score", "player_id"], ascending=[False, False, True])
+            candidates["live_exact_slot"] = candidates["live_preferred_slot"].eq(slot_name).astype(int)
+            candidates = candidates.sort_values(
+                ["live_exact_slot", "live_source_starter", "live_depth_rank", "depth_order_score", "position_confidence_score", "player_id"],
+                ascending=[False, False, True, False, False, True])
             chosen_idx = candidates.index[0]
             player_id = out.at[chosen_idx, "player_id"]
             used.add(player_id)
@@ -833,7 +849,9 @@ def finalize(depth: pd.DataFrame) -> pd.DataFrame:
         "durability_score", "depth_order_score", "ol_authoritative_starter",
         "configured_ol_starter", "configured_ol_starter_slot", "ol_starter_source",
         "ol_source_depth_rank", "ol_source_injury_status", "ol_source_timestamp",
-        "source", "build_id", "date_imported",
+        "original_roster_status", "live_depth_rank", "live_source_starter", "live_preferred_slot",
+        "live_injury_status", "live_uncertain", "live_injury_reported_at", "live_source_timestamp",
+        "live_fetched_at_utc", "identity_match_method", "source", "build_id", "date_imported",
     ]
     for col in columns:
         if col not in out.columns:
@@ -887,6 +905,17 @@ def validate(depth: pd.DataFrame, perf_rows: int) -> None:
         raise RuntimeError("Reserve/developmental status regression")
 
 
+def record_refresh_status(db_path: Path, status: str, attempted_at_utc: str,
+                          error: str = "") -> None:
+    """Record the latest attempt independently of the last successful snapshot."""
+    with sqlite3.connect(db_path) as connection:
+        pd.DataFrame([{
+            "season": SEASON, "status": status,
+            "attempted_at_utc": attempted_at_utc, "error": error,
+            "depth_version": VERSION,
+        }]).to_sql(live_depth.REFRESH_STATUS_TABLE, connection, if_exists="replace", index=False)
+
+
 def main() -> int:
     args = parse_args()
     project_root = args.project_root.resolve()
@@ -900,21 +929,27 @@ def main() -> int:
     logger.info("[DEPTH] Build ID: %s", BUILD_ID)
     logger.info("[DEPTH] Version: %s", VERSION)
     logger.info("[DEPTH] Database: %s", db_path)
+    attempted_at_utc = pd.Timestamp.now(tz="UTC").isoformat()
 
     try:
         with sqlite3.connect(db_path) as conn:
             perf, master = load_inputs(conn)
-            starters = load_qb_starters(conn)
-            ol_starters = load_ol_starters(
-                conn,
-                refresh=not args.no_refresh_ol_starters,
-                timeout=max(float(args.espn_timeout), 1.0),
-                logger=logger,
-            )
+            master = live_depth.attach_roster_provenance(conn, master)
+            logger.info("[DEPTH] Refreshing automatic all-position roster, injuries and depth order; manual QB CSV is not used")
+            sources, source_audit = live_depth.fetch_sources(
+                project_root, ESPN_TEAM_IDS, max(float(args.espn_timeout), 1.0), args.no_refresh_ol_starters,
+                master=master)
+            perf, master, starters, ol_starters, availability = live_depth.build_live_inputs(
+                perf, master, sources, source_audit, normalize_name)
+            ol_starters = validate_ol_starters(ol_starters)
             prepared = prepare_depth(perf, master, starters, ol_starters)
             ranked = assign_starters_and_ranks(prepared)
             depth = finalize(ranked)
             validate(depth, len(perf))
+            ensure_qb_starter_table(conn)
+            ensure_ol_starter_table(conn)
+            live_depth.persist_starters(conn, starters, ol_starters)
+            live_depth.persist_sources(conn, project_root, availability, source_audit, not args.no_csv)
 
             audit_cols = [
                 "team", "starter_slot", "canonical_role", "depth_rank", "player_id", "player_name",
@@ -925,6 +960,8 @@ def main() -> int:
                 "ol_authoritative_starter", "configured_ol_starter",
                 "configured_ol_starter_slot", "ol_starter_source", "ol_source_depth_rank",
                 "ol_source_injury_status", "ol_source_timestamp",
+                "live_injury_status", "live_uncertain", "live_depth_rank",
+                "live_fetched_at_utc", "identity_match_method",
             ]
             audit = depth[audit_cols].copy()
             depth.to_sql(OUTPUT_TABLE, conn, if_exists="replace", index=False)
@@ -943,6 +980,7 @@ def main() -> int:
             ).reset_index()
             summary.to_csv(output_dir / "nfl_projected_depth_chart_2026_summary.csv", index=False, encoding="utf-8-sig")
 
+        record_refresh_status(db_path, "SUCCESS", attempted_at_utc)
         logger.info("[DEPTH] Canonical players: %s", f"{len(depth):,}")
         logger.info("[DEPTH] Teams: %s", depth["team"].nunique())
         logger.info("[DEPTH] Authoritative QB starters: %s", int(depth["qb_authoritative_starter"].sum()))
@@ -953,9 +991,22 @@ def main() -> int:
         logger.info("[DEPTH] Saved table: %s", OUTPUT_TABLE)
         logger.info("\n[DEPTH] Projected QB starters:\n%s", depth[depth["qb_authoritative_starter"].eq(1)][["team", "player_name", "performance_grade", "unit_quality_grade", "position_confidence_score"]].sort_values("team").to_string(index=False))
         return 0
+    except live_depth.SourceUnavailable as exc:
+        logger.error("[DEPTH] SOURCE_UNAVAILABLE: %s", exc)
+        try:
+            record_refresh_status(db_path, "SOURCE_UNAVAILABLE", attempted_at_utc, str(exc))
+        except Exception as status_exc:
+            logger.error("[DEPTH] Could not record source outage safely: %s", status_exc)
+            return 1
+        logger.warning("[DEPTH] Current availability was not refreshed. The weekly runner may continue the frozen baseline; adjusted lines will be withheld.")
+        return SOURCE_UNAVAILABLE_EXIT_CODE
     except Exception as exc:
         logger.error("[DEPTH] FAILED: %s", exc)
         logger.error(traceback.format_exc())
+        try:
+            record_refresh_status(db_path, "FAILED", attempted_at_utc, f"{type(exc).__name__}: {exc}")
+        except Exception as status_exc:
+            logger.error("[DEPTH] Could not record failed refresh: %s", status_exc)
         return 1
 
 

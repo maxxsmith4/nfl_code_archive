@@ -49,7 +49,7 @@ import pandas as pd
 
 SEASON = 2026
 BUILD_ID = "NFL_TEAM_UNIT_RATINGS_2026_CANONICAL_V8"
-VERSION = "v8_pff_ol_talent_contract_qb_ceiling_95"
+VERSION = "v8_1_automatic_depth_priority_qb_ceiling_95"
 
 DEFAULT_PROJECT_ROOT = Path(r"C:\Users\maxxs\Downloads\Football Files\nfl_model")
 DEFAULT_DB_PATH = Path(r"C:\Users\maxxs\DataGripProjects\NFL\identifier.sqlite")
@@ -274,9 +274,11 @@ def choose_player(team_depth: pd.DataFrame, spec: SlotSpec, used: set[str]) -> p
         return None
     candidates["exact_slot"] = candidates["starter_slot"].eq(spec.slot_name).astype(int)
     candidates["starter_flag"] = candidates["is_projected_starter"].gt(0).astype(int)
+    candidates["live_source_starter"] = numeric(candidates, "live_source_starter", 0.0)
+    candidates["live_depth_rank"] = numeric(candidates, "live_depth_rank", 999.0)
     candidates = candidates.sort_values(
-        ["exact_slot", "starter_flag", "depth_order_score", "position_confidence_score", "player_id"],
-        ascending=[False, False, False, False, True],
+        ["exact_slot", "starter_flag", "live_source_starter", "live_depth_rank", "depth_order_score", "position_confidence_score", "player_id"],
+        ascending=[False, False, False, True, False, False, True],
     )
     return candidates.iloc[0]
 

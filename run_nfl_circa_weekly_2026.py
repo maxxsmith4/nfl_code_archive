@@ -43,7 +43,7 @@ import pandas as pd
 
 
 BUILD_ID = "NFL_CIRCA_WEEKLY_2026_CANONICAL_V1"
-VERSION = "v1_2_learned_consensus_confidence_certificate"
+VERSION = "v1_6_prior_result_reconciliation_single_game_ol_certificate"
 SEASON = 2026
 SEASON_ROMAN = "VIII"
 
@@ -60,7 +60,7 @@ EXPECTED_HISTORICAL_BUILD = "NFL_CIRCA_CONTEST_LINES_CANONICAL_V1"
 EXPECTED_HISTORICAL_VERSION = "v1_5_qb_identity_integrity_guard"
 EXPECTED_PREDICTOR_BUILD = "NFL_CIRCA_TOP5_2026_PRODUCTION_CONFIDENCE_BOARD"
 EXPECTED_PREDICTOR_VERSION = (
-    "v8_4_learned_consensus_lineage_live_feature_freshness"
+    "v8_5_timezone_safe_freshness"
 )
 
 FORM_TABLE = "nfl_2026_form_ratings"
@@ -115,6 +115,46 @@ TEAM_ALIASES = {
     "LVR": "LV", "OAK": "LV", "NWE": "NE", "NOR": "NO",
     "SFO": "SF", "TAM": "TB", "WSH": "WAS", "WFT": "WAS",
 }
+NFL_FULL_TEAM_NAMES = {
+    "ARIZONA CARDINALS": "ARI",
+    "ATLANTA FALCONS": "ATL",
+    "BALTIMORE RAVENS": "BAL",
+    "BUFFALO BILLS": "BUF",
+    "CAROLINA PANTHERS": "CAR",
+    "CHICAGO BEARS": "CHI",
+    "CINCINNATI BENGALS": "CIN",
+    "CLEVELAND BROWNS": "CLE",
+    "DALLAS COWBOYS": "DAL",
+    "DENVER BRONCOS": "DEN",
+    "DETROIT LIONS": "DET",
+    "GREEN BAY PACKERS": "GB",
+    "HOUSTON TEXANS": "HOU",
+    "INDIANAPOLIS COLTS": "IND",
+    "JACKSONVILLE JAGUARS": "JAX",
+    "KANSAS CITY CHIEFS": "KC",
+    "LAS VEGAS RAIDERS": "LV",
+    "LOS ANGELES CHARGERS": "LAC",
+    "LOS ANGELES RAMS": "LAR",
+    "MIAMI DOLPHINS": "MIA",
+    "MINNESOTA VIKINGS": "MIN",
+    "NEW ENGLAND PATRIOTS": "NE",
+    "NEW ORLEANS SAINTS": "NO",
+    "NEW YORK GIANTS": "NYG",
+    "NEW YORK JETS": "NYJ",
+    "PHILADELPHIA EAGLES": "PHI",
+    "PITTSBURGH STEELERS": "PIT",
+    "SAN FRANCISCO 49ERS": "SF",
+    "SEATTLE SEAHAWKS": "SEA",
+    "TAMPA BAY BUCCANEERS": "TB",
+    "TENNESSEE TITANS": "TEN",
+    "WASHINGTON COMMANDERS": "WAS",
+    "WASHINGTON FOOTBALL TEAM": "WAS",
+    "OAKLAND RAIDERS": "LV",
+    "SAN DIEGO CHARGERS": "LAC",
+    "ST LOUIS RAMS": "LAR",
+    "ST. LOUIS RAMS": "LAR",
+}
+CANONICAL_NFL_TEAMS = frozenset(NFL_FULL_TEAM_NAMES.values())
 
 
 class BoardNotPublished(RuntimeError):
@@ -202,7 +242,76 @@ def now_string() -> str:
 
 def normalize_team(value: Any) -> str:
     text = "" if value is None else str(value).upper().strip()
-    return TEAM_ALIASES.get(text, text)
+    text = re.sub(r"\s+", " ", text)
+    return NFL_FULL_TEAM_NAMES.get(text, TEAM_ALIASES.get(text, text))
+
+
+def matchup_key(
+    season: Any, week: Any, away: Any, home: Any, *, team_rows: bool = False
+) -> Optional[tuple[int, int, str, str]]:
+    try:
+        season_value, week_value = float(season), float(week)
+        if not season_value.is_integer() or not week_value.is_integer():
+            return None
+        away_team, home_team = normalize_team(away), normalize_team(home)
+        if (
+            not 1 <= week_value <= 18
+            or away_team not in CANONICAL_NFL_TEAMS
+            or home_team not in CANONICAL_NFL_TEAMS
+            or away_team == home_team
+        ):
+            return None
+        if team_rows:
+            away_team, home_team = sorted((away_team, home_team))
+        return int(season_value), int(week_value), away_team, home_team
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def reconcile_schedule_ids(
+    frame: pd.DataFrame, schedule: pd.DataFrame, *, team_rows: bool = False
+) -> pd.Series:
+    """Resolve exact game identities for audit only; preserve source IDs.
+
+    Sources use W01, 01, or 1 and LA/LAR within IDs. Match explicit season,
+    week, and teams instead. Team-game capture contains offense/defense rows,
+    so only that source uses an unordered pair; prediction orientation stays
+    strict. Missing/ambiguous identities never match.
+    """
+    lookup: dict[tuple[int, int, str, str], str] = {}
+    for row in schedule.itertuples(index=False):
+        key = matchup_key(
+            row.season, row.week, row.away_team, row.home_team, team_rows=team_rows
+        )
+        if key is None or key in lookup:
+            raise RuntimeError("Schedule has an invalid or duplicate game identity.")
+        lookup[key] = str(row.game_id)
+    away_column, home_column = (
+        ("offense_team", "defense_team") if team_rows
+        else ("away_team", "home_team")
+    )
+    columns = ("season", "week", away_column, home_column, "game_id")
+    if not set(columns).issubset(frame.columns):
+        return pd.Series(None, index=frame.index, dtype=object)
+    resolved: list[Optional[str]] = []
+    for season, week, away, home, source_id in frame[list(columns)].itertuples(
+        index=False, name=None
+    ):
+        key = matchup_key(season, week, away, home, team_rows=team_rows)
+        missing_id = pd.isna(source_id) or not str(source_id).strip()
+        # If an ID embeds teams, it must agree with its explicit row fields.
+        encoded = re.fullmatch(
+            r"(\d{4})_[Ww]?(\d{1,2})_([A-Za-z]+)_([A-Za-z]+)",
+            str(source_id).strip(),
+        )
+        id_conflict = encoded is not None and matchup_key(
+            *encoded.groups(), team_rows=team_rows
+        ) != key
+        resolved.append(
+            lookup.get(key) if key is not None and not missing_id and not id_conflict
+            else None
+        )
+    return pd.Series(resolved, index=frame.index, dtype=object)
 
 
 def first_existing(columns: Any, candidates: tuple[str, ...]) -> Optional[str]:
@@ -402,6 +511,13 @@ def standardize_database_schedule(raw: pd.DataFrame) -> pd.DataFrame:
     output["spread_line"] = pd.to_numeric(output["spread_line"], errors="coerce")
     output["home_team"] = output["home_team"].map(normalize_team)
     output["away_team"] = output["away_team"].map(normalize_team)
+    observed_teams = set(output["home_team"]) | set(output["away_team"])
+    unknown_teams = sorted(observed_teams - CANONICAL_NFL_TEAMS - {""})
+    if unknown_teams:
+        raise RuntimeError(
+            f"{SCHEDULE_TABLE} contains unrecognized team names after "
+            f"normalization: {unknown_teams}"
+        )
     output["gameday"] = pd.to_datetime(output["gameday"], errors="coerce")
     regular = output["game_type"].fillna("REG").astype(str).str.upper().isin(
         {"REG", "R", "REGULAR", "REGULAR SEASON", "REGULAR_SEASON"}
@@ -443,6 +559,82 @@ def standardize_database_schedule(raw: pd.DataFrame) -> pd.DataFrame:
             ].to_string(index=False)
         )
     return output.sort_values(["week", "gameday", "game_id"]).reset_index(drop=True)
+
+
+def reconcile_prior_results_for_audit(
+    prior_schedule: pd.DataFrame,
+    feature_matrix: pd.DataFrame,
+    rating_alpha: float,
+) -> tuple[pd.DataFrame, dict[str, Any], bool]:
+    """Reconcile missing prior scores with the exact matrix used by the model.
+
+    The local schedule can be a preseason fixture list. The production matrix
+    retains its own schedule-source final scores. Only prior games are matched,
+    using season, week, oriented teams and consistent source IDs. This changes
+    an audit copy only; predictions, source tables and target-week rows stay intact.
+    """
+    result = prior_schedule.copy()
+    score_columns = ["home_score", "away_score"]
+
+    def valid_score(value: Any) -> bool:
+        number = pd.to_numeric(value, errors="coerce")
+        return bool(pd.notna(number) and np.isfinite(number)
+                    and number >= 0 and float(number).is_integer())
+
+    initial_valid = result[score_columns].apply(lambda col: col.map(valid_score)).all(axis=1)
+    evidence: dict[str, Any] = {
+        "scheduled_prior_games": len(result),
+        "original_schedule_complete_games": int(initial_valid.sum()),
+        "recovered_game_ids": [], "conflicting_game_ids": [],
+        "ambiguous_feature_game_ids": [], "invalid_feature_game_ids": [],
+        "matrix_result_source_available": False,
+    }
+    required = {"season", "week", "game_id", "home_team", "away_team",
+                "rating_alpha", *score_columns}
+    if not result.empty and required.issubset(feature_matrix.columns):
+        matrix = feature_matrix[
+            pd.to_numeric(feature_matrix["season"], errors="coerce").eq(SEASON)
+            & pd.to_numeric(feature_matrix["week"], errors="coerce").isin(result["week"])
+            & pd.to_numeric(feature_matrix["rating_alpha"], errors="coerce").eq(rating_alpha)
+        ].copy()
+        matrix["_audit_game_id"] = reconcile_schedule_ids(matrix, result)
+        matrix = matrix[matrix["_audit_game_id"].notna()]
+        evidence["matrix_result_source_available"] = not matrix.empty
+        groups = {str(key): group for key, group in matrix.groupby("_audit_game_id")}
+        for index, row in result.iterrows():
+            game_id = str(row["game_id"])
+            group = groups.get(game_id)
+            if group is None:
+                continue
+            if len(group) != 1:
+                evidence["ambiguous_feature_game_ids"].append(game_id)
+                continue
+            source = group.iloc[0]
+            if not all(valid_score(source[column]) for column in score_columns):
+                evidence["invalid_feature_game_ids"].append(game_id)
+                continue
+            conflict = any(
+                pd.notna(row[column])
+                and (not valid_score(row[column]) or float(row[column]) != float(source[column]))
+                for column in score_columns
+            )
+            if conflict:
+                evidence["conflicting_game_ids"].append(game_id)
+                continue
+            if any(pd.isna(row[column]) for column in score_columns):
+                for column in score_columns:
+                    if pd.isna(row[column]):
+                        result.at[index, column] = float(source[column])
+                evidence["recovered_game_ids"].append(game_id)
+    final_valid = result[score_columns].apply(lambda col: col.map(valid_score)).all(axis=1)
+    evidence["verified_complete_games"] = int(final_valid.sum())
+    evidence["missing_or_invalid_game_ids"] = result.loc[~final_valid, "game_id"].astype(str).tolist()
+    if "actual_home_margin" in result.columns:
+        result["actual_home_margin"] = result["home_score"] - result["away_score"]
+    passed = bool(final_valid.all() and not any(evidence[key] for key in (
+        "conflicting_game_ids", "ambiguous_feature_game_ids", "invalid_feature_game_ids"
+    )))
+    return result, evidence, passed
 
 
 def load_schedule(
@@ -1020,6 +1212,202 @@ def audit_model_files(
     }
 
 
+def one_game_ol_initialization_evidence(
+    feature_matrix: pd.DataFrame,
+    personnel_week: pd.DataFrame,
+    prior_schedule: pd.DataFrame,
+    week: int,
+    source_cache: Path,
+) -> tuple[bool, dict[str, Any]]:
+    """Validate the existing 1/1/0 initialization using prior OL participation.
+
+    An all-zero matchup difference is expected with just one prior snapshot.
+    This verifies that contract, including the raw snap source, without changing
+    any features.  A calendar-week exemption would hide missing OL source rows.
+    """
+    evidence: dict[str, Any] = {
+        "scope": "ONE_PRIOR_GAME_INITIALIZATION", "source_cache": str(source_cache),
+        "source_table": "snap_source", "passed": False,
+    }
+
+    def reject(reason: str) -> tuple[bool, dict[str, Any]]:
+        evidence["reason"] = reason
+        return False, evidence
+
+    def matches(actual: Any, expected: float) -> bool:
+        value = pd.to_numeric(pd.Series([actual]), errors="coerce").iloc[0]
+        return bool(np.isfinite(value) and math.isclose(float(value), expected, abs_tol=1e-12, rel_tol=0))
+
+    required_schedule = {"season", "week", "home_team", "away_team"}
+    if int(week) <= 1 or not required_schedule.issubset(prior_schedule.columns):
+        return reject("One-game initialization requires prior scheduled games.")
+    expected_pairs: list[tuple[str, int]] = []
+    for row in prior_schedule.itertuples(index=False):
+        values = pd.to_numeric(pd.Series([row.season, row.week]), errors="coerce")
+        if not np.isfinite(values).all() or values.iloc[0] != SEASON:
+            return reject("Prior schedule contains invalid season/week metadata.")
+        game_week = float(values.iloc[1])
+        if game_week != int(game_week) or not 1 <= game_week < int(week):
+            return reject("Prior schedule is not strictly before the prediction week.")
+        expected_pairs.extend((normalize_team(t), int(game_week)) for t in (row.home_team, row.away_team))
+    expected_last_week = dict(expected_pairs)
+    if len(expected_pairs) != 32 or set(expected_last_week) != CANONICAL_NFL_TEAMS:
+        return reject("Initialization is valid only with exactly one prior game per team.")
+    levels = {"ol_continuity_last2": 1.0, "ol_rolling_stability": 1.0, "missing_core_ol_share": 0.0}
+    history_fields = ("history_games", "last_completed_game_week", "weeks_since_last_game")
+    required_personnel = {"season", "prediction_week", "team", *history_fields, *levels}
+    if not required_personnel.issubset(personnel_week.columns):
+        return reject("Personnel metadata or original OL levels are missing.")
+    personnel = personnel_week.copy()
+    personnel["team"] = personnel["team"].map(normalize_team)
+    if len(personnel) != 32 or personnel["team"].duplicated().any() or set(personnel["team"]) != set(expected_last_week):
+        return reject("Personnel must contain exactly one row for each of the 32 teams.")
+
+    def expected_team_values(team: str) -> dict[str, float]:
+        return {"history_games": 1, "last_completed_game_week": expected_last_week[team],
+                "weeks_since_last_game": int(week) - expected_last_week[team], **levels}
+
+    for row in personnel.itertuples(index=False):
+        expected = {"season": SEASON, "prediction_week": int(week), **expected_team_values(row.team)}
+        for column, value in expected.items():
+            if not matches(getattr(row, column), value):
+                return reject(f"Personnel {row.team}.{column} does not match one-game initialization.")
+    required_matrix = {"season", "week", "home_team", "away_team"}
+    required_matrix.update(f"{side}_{c}" for side in ("home", "away") for c in (*history_fields, *levels))
+    if feature_matrix.empty or not required_matrix.issubset(feature_matrix.columns):
+        return reject("Matchup matrix lacks original team OL levels or history metadata.")
+    for row in feature_matrix.itertuples(index=False):
+        if not matches(row.season, SEASON) or not matches(row.week, int(week)):
+            return reject("Matchup matrix season/week does not match the certificate.")
+        for side in ("home", "away"):
+            team = normalize_team(getattr(row, f"{side}_team"))
+            if team not in expected_last_week:
+                return reject("Matchup matrix contains a team absent from prior history.")
+            for column, value in expected_team_values(team).items():
+                if not matches(getattr(row, f"{side}_{column}"), value):
+                    return reject(f"Matchup {team}.{column} does not match one-game initialization.")
+    if not source_cache.is_file():
+        return reject("Live snap-source cache is missing; rebuild live features to restore source evidence.")
+    try:
+        with sqlite3.connect(source_cache.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+            snaps = pd.read_sql_query('SELECT * FROM "snap_source" WHERE season = ?', connection, params=(SEASON,))
+    except (sqlite3.Error, pd.errors.DatabaseError, OSError) as exc:
+        return reject(f"Cannot read live snap-source cache: {type(exc).__name__}: {exc}")
+    required_snaps = {"season", "week", "team", "player_key", "position_group", "offense_snaps"}
+    if not required_snaps.issubset(snaps.columns):
+        return reject("Live snap-source cache lacks required OL identity/participation fields.")
+    snap_weeks = pd.to_numeric(snaps["week"], errors="coerce")
+    if not np.isfinite(snap_weeks).all() or not snap_weeks.eq(snap_weeks.round()).all():
+        return reject("Live snap-source cache has invalid week metadata.")
+    snaps = snaps.loc[snap_weeks.lt(int(week))].copy()
+    snaps["week"] = snap_weeks.loc[snaps.index].astype(int)
+    snaps["team"] = snaps["team"].map(normalize_team)
+    actual_pairs = set(zip(snaps["team"], snaps["week"]))
+    if actual_pairs != set(expected_pairs):
+        evidence["missing_team_weeks"] = sorted(set(expected_pairs) - actual_pairs)
+        evidence["unexpected_team_weeks"] = sorted(actual_pairs - set(expected_pairs))
+        return reject("Live snap-source team/week coverage does not match completed games.")
+    ol = snaps.loc[snaps["position_group"].astype(str).str.upper().eq("OL")].copy()
+    counts: dict[str, int] = {}
+    for team, game_week in expected_pairs:
+        group = ol.loc[ol["team"].eq(team) & ol["week"].eq(game_week)]
+        participation = pd.to_numeric(group["offense_snaps"], errors="coerce")
+        if not np.isfinite(participation).all() or participation.lt(0).any():
+            return reject(f"Invalid OL snap counts for {team}, Week {game_week}.")
+        keys = group.loc[participation.gt(0), "player_key"].fillna("").astype(str).str.strip()
+        valid = ~keys.str.lower().isin({"", "nan", "none", "null"})
+        count = int(keys.nunique()) if valid.all() and not keys.duplicated().any() else 0
+        counts[team] = count
+        if count < 5:
+            evidence["ol_players_per_team"] = counts
+            return reject(f"Need at least five distinct OL players with positive snaps for {team}, Week {game_week}.")
+    evidence.update({"passed": True, "teams": 32, "history_games_per_team": 1,
+                     "ol_players_per_team": counts, "expected_team_levels": levels,
+                     "reason": "One prior OL snapshot per team; 1/1/0 levels yield zero matchup differences."})
+    return True, evidence
+
+
+def ol_snap_cache_lineage(feature_db: Path) -> tuple[Optional[Path], dict[str, Any]]:
+    """Resolve the raw source used by this exact live feature build, read-only."""
+    evidence: dict[str, Any] = {"feature_database": str(feature_db), "passed": False}
+    try:
+        if not feature_db.is_file():
+            raise ValueError("Live feature database is missing.")
+        with sqlite3.connect(feature_db.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+            run = pd.read_sql_query('SELECT * FROM "nfl_matchup_run_audit"', connection)
+        if len(run) != 1 or not {"cache_path", "created_at", "build_id", "version"}.issubset(run.columns):
+            raise ValueError("Live feature audit lacks a unique source-cache lineage.")
+        row = run.iloc[0]
+        cache = Path(str(row["cache_path"]))
+        if not cache.is_absolute() or not cache.is_file():
+            raise ValueError("Live feature audit references a missing or non-absolute source cache.")
+        with sqlite3.connect(cache.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+            audit = pd.read_sql_query('SELECT * FROM "cache_audit"', connection)
+        if len(audit) != 1 or not {"created_at", "build_id", "version"}.issubset(audit.columns):
+            raise ValueError("Raw snap-source cache lacks a unique build audit.")
+        source = audit.iloc[0]
+        expected = {"build_id": "NFL_WEEKLY_MATCHUP_MARKET_RESIDUAL_CANONICAL_V3",
+                    "version": "v3_qb_gsis_identity_crosswalk_dead_feature_guard"}
+        if any(str(row[k]) != v or str(source[k]) != v for k, v in expected.items()):
+            raise ValueError("Raw source-cache and live feature build/version lineage do not match.")
+        source_at = pd.to_datetime(source["created_at"], errors="coerce", utc=True)
+        feature_at = pd.to_datetime(row["created_at"], errors="coerce", utc=True)
+        if pd.isna(source_at) or pd.isna(feature_at) or source_at > feature_at:
+            raise ValueError("Raw source-cache timestamp is invalid or newer than the feature build.")
+        evidence.update({"passed": True, "source_cache": str(cache),
+                         "cache_created_at": str(source["created_at"]),
+                         "feature_created_at": str(row["created_at"])})
+        return cache, evidence
+    except (ValueError, sqlite3.Error, pd.errors.DatabaseError, OSError) as exc:
+        evidence["reason"] = f"Cannot verify original OL source cache: {type(exc).__name__}: {exc}"
+        return None, evidence
+
+
+def evaluate_ol_live_signal(
+    feature_matrix: pd.DataFrame,
+    personnel_week: pd.DataFrame,
+    prior_schedule: pd.DataFrame,
+    week: int,
+    source_cache: Path,
+    feature_db: Optional[Path] = None,
+) -> tuple[bool, dict[str, Any]]:
+    columns = ("ol_continuity_advantage", "ol_stability_advantage", "core_ol_health_advantage")
+    series_by_column = {
+        c: pd.to_numeric(feature_matrix.get(c, pd.Series(np.nan, index=feature_matrix.index)), errors="coerce")
+        for c in columns
+    }
+    metrics: dict[str, Any] = {}
+    for column, series in series_by_column.items():
+        metrics[f"{column}_coverage"] = float(np.isfinite(series).mean()) if len(series) else 0.0
+        metrics[f"{column}_std"] = float(series.std(ddof=0)) if len(series) else 0.0
+    nonzero = sum(int(s.fillna(0).abs().gt(1e-12).sum()) for s in series_by_column.values())
+    metrics["combined_nonzero_rows"] = nonzero
+    covered = all(metrics[f"{c}_coverage"] == 1.0 for c in columns)
+    nondegenerate = nonzero > 0 and any(metrics[f"{c}_std"] > 1e-6 for c in columns)
+    if covered and (int(week) == 1 or nondegenerate):
+        metrics["validation_scope"] = "WEEK1" if int(week) == 1 else "LIVE_VARIATION"
+        return True, metrics
+    if covered and nonzero == 0 and int(week) > 1:
+        lineage = None
+        if feature_db is not None:
+            bound_cache, lineage = ol_snap_cache_lineage(feature_db)
+            if bound_cache is None:
+                metrics["initialization_evidence"] = lineage
+                metrics["validation_scope"] = "UNVERIFIED_ZERO_SIGNAL"
+                return False, metrics
+            source_cache = bound_cache
+        initialized, evidence = one_game_ol_initialization_evidence(
+            feature_matrix, personnel_week, prior_schedule, week, source_cache,
+        )
+        if lineage is not None:
+            evidence["cache_lineage"] = lineage
+        metrics["initialization_evidence"] = evidence
+        metrics["validation_scope"] = "ONE_PRIOR_GAME_INITIALIZATION" if initialized else "UNVERIFIED_ZERO_SIGNAL"
+        return initialized, metrics
+    metrics["validation_scope"] = "MISSING_OR_DEGENERATE_SIGNAL"
+    return False, metrics
+
+
 def build_integrity_certificate(
     args: argparse.Namespace,
     schedule: pd.DataFrame,
@@ -1245,29 +1633,69 @@ def build_integrity_certificate(
         feature_matrix = feature_matrix[
             rating_alpha.eq(float(predictor_audit.get("rating_alpha", 10.0)))
         ].copy()
-    feature_ids = set(feature_matrix.get("game_id", pd.Series(dtype=str)).astype(str))
+    feature_source_ids = feature_matrix.get("game_id", pd.Series(dtype=str)).astype(str)
+    feature_schedule_ids = reconcile_schedule_ids(feature_matrix, target_schedule)
+    feature_ids = set(feature_schedule_ids.dropna())
+    feature_games_ok = (
+        len(feature_matrix) == len(target_schedule)
+        and feature_schedule_ids.notna().all()
+        and feature_schedule_ids.nunique() == len(feature_matrix)
+        and feature_source_ids.nunique() == len(feature_matrix)
+        and feature_ids == target_ids
+    )
     add_integrity_check(
         details,
         "FEATURE_MATRIX",
         "exact_target_week_games",
-        len(feature_matrix) == len(target_schedule) and feature_ids == target_ids,
+        feature_games_ok,
         {"rows": len(target_schedule), "game_ids": sorted(target_ids)},
-        {"rows": len(feature_matrix), "game_ids": sorted(feature_ids)},
+        {
+            "rows": len(feature_matrix),
+            "source_game_ids": sorted(set(feature_source_ids)),
+            "reconciled_schedule_game_ids": sorted(feature_ids),
+            "unmatched_rows": int(feature_schedule_ids.isna().sum()),
+        },
         "The model matrix must contain exactly one row per scheduled target-week game.",
     )
     personnel_complete = pd.to_numeric(
         feature_matrix.get("personnel_complete"), errors="coerce"
     )
+    week1_history_columns = [
+        f"{side}_{field}"
+        for side in ("home", "away")
+        for field in (
+            "history_games", "last_completed_game_week", "qb_recent_games",
+            "qb_identity_matched", "qb_recent_epa", "qb_recent_cpoe",
+        )
+    ]
+    week1_contract = (
+        week == 1
+        and prior_schedule.empty
+        and all(value == 0 for value in team_game_expectation.values())
+        and feature_games_ok
+        and not feature_matrix.empty
+        and str(predictor_audit.get("qb_feature_integrity_status", ""))
+        == "WEEK1_HISTORICAL_NO_SAME_SEASON_QB_FEATURES"
+        and pd.to_numeric(
+            predictor_audit.get("qb_feature_integrity_passed"), errors="coerce"
+        ) == 1
+        and personnel_complete.eq(0).all()
+        and set(week1_history_columns).issubset(feature_matrix.columns)
+        and feature_matrix[week1_history_columns].isna().all(axis=None)
+    )
     add_integrity_check(
         details,
         "FEATURE_MATRIX",
         "personnel_complete",
-        len(personnel_complete) == len(feature_matrix)
-        and not feature_matrix.empty
-        and personnel_complete.eq(1).all(),
-        1.0,
+        week1_contract if week == 1 else (
+            len(personnel_complete) == len(feature_matrix)
+            and not feature_matrix.empty
+            and personnel_complete.eq(1).all()
+        ),
+        "WEEK1_NO_CURRENT_SEASON_HISTORY; raw completeness=0" if week == 1 else 1.0,
         float(personnel_complete.eq(1).mean()) if len(personnel_complete) else 0.0,
-        "Every target game must have complete personnel features.",
+        "Week 1 must match the explicit no-current-history contract; "
+        "Weeks 2-18 require complete personnel features for every target game.",
     )
 
     team_games = table_or_empty(
@@ -1283,10 +1711,15 @@ def build_integrity_certificate(
         current_source = team_games[season_values.eq(SEASON)].copy()
         current_weeks = pd.to_numeric(current_source.get("week"), errors="coerce")
         captured_prior = current_source[current_weeks.lt(week)].copy()
-        captured_ids = set(captured_prior["game_id"].astype(str))
-        leaking = current_source[current_weeks.ge(week)]
+        captured_schedule_ids = reconcile_schedule_ids(
+            captured_prior, prior_schedule, team_rows=True
+        )
+        captured_ids = set(captured_schedule_ids.dropna())
+        leaking = current_source[current_weeks.ge(week) | current_weeks.isna()]
     else:
+        current_source = pd.DataFrame()
         captured_prior = pd.DataFrame()
+        captured_schedule_ids = pd.Series(dtype=object)
         captured_ids = set()
         leaking = pd.DataFrame()
     source_fingerprint = hashlib.sha256(
@@ -1296,20 +1729,41 @@ def build_integrity_certificate(
         details,
         "CAPTURE",
         "all_prior_games_captured",
-        captured_ids == prior_ids,
+        captured_ids == prior_ids and captured_schedule_ids.notna().all(),
         {"games": len(prior_ids), "game_ids": sorted(prior_ids)},
-        {"games": len(captured_ids), "game_ids": sorted(captured_ids)},
+        {
+            "games": len(captured_ids), "game_ids": sorted(captured_ids),
+            "source_game_ids": sorted(set(
+                captured_prior.get("game_id", pd.Series(dtype=str)).astype(str)
+            )),
+            "unmatched_team_rows": int(captured_schedule_ids.isna().sum()),
+        },
         "The 2026 play-by-play-derived source must contain every prior scheduled game.",
     )
     expected_team_game_rows = 2 * len(prior_ids)
+    expected_team_sides = {
+        (str(row.game_id), offense, defense)
+        for row in prior_schedule.itertuples(index=False)
+        for offense, defense in (
+            (normalize_team(row.home_team), normalize_team(row.away_team)),
+            (normalize_team(row.away_team), normalize_team(row.home_team)),
+        )
+    }
+    captured_team_sides = set(zip(
+        captured_schedule_ids,
+        captured_prior.get("offense_team", pd.Series(dtype=str)).map(normalize_team),
+        captured_prior.get("defense_team", pd.Series(dtype=str)).map(normalize_team),
+    ))
     add_integrity_check(
         details,
         "CAPTURE",
         "two_team_rows_per_prior_game",
-        len(captured_prior) == expected_team_game_rows,
+        len(captured_prior) == expected_team_game_rows
+        and captured_team_sides == expected_team_sides,
         expected_team_game_rows,
         len(captured_prior),
-        "Each completed game must contribute one offensive row for each team.",
+        "Each completed game must contribute exactly one offensive row per "
+        "scheduled team, with the correct opponent.",
     )
     add_integrity_check(
         details,
@@ -1320,24 +1774,23 @@ def build_integrity_certificate(
         len(leaking),
         "No Week W or future 2026 result may enter a Week W prediction.",
     )
-    prior_scores_complete = (
-        prior_schedule[["home_score", "away_score"]].notna().all(axis=None)
-        if not prior_schedule.empty
-        else True
+    _verified_prior_results, prior_result_audit, prior_scores_complete = (
+        reconcile_prior_results_for_audit(
+            prior_schedule, feature_matrix_all,
+            float(predictor_audit.get("rating_alpha", 10.0)),
+        )
     )
+    prior_result_audit["schedule_source"] = schedule_source
+    prior_result_audit["matrix_result_source"] = feature_source
     add_integrity_check(
         details,
         "CAPTURE",
         "prior_schedule_results_complete",
         bool(prior_scores_complete),
         len(prior_schedule),
-        int(
-            prior_schedule[["home_score", "away_score"]]
-            .notna()
-            .all(axis=1)
-            .sum()
-        ) if not prior_schedule.empty else 0,
-        "All schedule games before the prediction week must have final scores.",
+        prior_result_audit,
+        "Every prior game requires valid final scores from the schedule or the "
+        "exact model matrix; matchup identities must agree and conflicting results fail.",
     )
     if week > 1 and previous_payload is not None:
         previous_metrics = previous_payload.get("metrics", {})
@@ -1399,10 +1852,23 @@ def build_integrity_certificate(
         details,
         "PERSONNEL",
         "bye_aware_team_history_counts",
-        len(personnel_week) == 32 and actual_history == team_game_expectation,
-        team_game_expectation,
+        (
+            week1_contract
+            and personnel_week.empty
+            and not pd.to_numeric(
+                personnel.get("season", pd.Series(dtype=float)), errors="coerce"
+            ).eq(SEASON).any()
+            and captured_prior.empty
+            and current_source.empty
+            and leaking.empty
+        ) if week == 1 else (
+            len(personnel_week) == 32 and actual_history == team_game_expectation
+        ),
+        {"current_season_personnel_rows": 0, "scheduled_history_games": team_game_expectation}
+        if week == 1 else team_game_expectation,
         actual_history,
-        "Every team history count must equal its scheduled completed games, including byes.",
+        "Week 1 has no current-season personnel snapshots; subsequent team "
+        "history counts must equal scheduled completed games, including byes.",
     )
 
     identity_fields = ("home_qb_identity_matched", "away_qb_identity_matched")
@@ -1418,10 +1884,17 @@ def build_integrity_certificate(
         details,
         "QB",
         "qb_identity_match_rate",
-        identity_rate == 1.0,
-        1.0,
-        identity_rate,
-        "All 64 team-side QB identities on a full week must resolve exactly.",
+        week1_contract if week == 1 else (
+            len(identity_values) == 2 * len(feature_matrix) and identity_rate == 1.0
+        ),
+        "WEEK1_NOT_APPLICABLE; authoritative prior QB starters checked separately"
+        if week == 1 else 1.0,
+        {
+            "raw_match_rate": identity_rate,
+            "scope": "WEEK1_NO_CURRENT_SEASON_HISTORY" if week == 1 else "CURRENT_SEASON",
+        },
+        "Current-season QB identities must resolve for both sides after Week 1; "
+        "Week 1 must have absent same-season identities and valid prior QB starters.",
     )
     qb_epa = pd.concat(
         [
@@ -1481,45 +1954,20 @@ def build_integrity_certificate(
         ),
     )
 
-    ol_columns = (
-        "ol_continuity_advantage",
-        "ol_stability_advantage",
-        "core_ol_health_advantage",
-    )
-    ol_series = {
-        column: pd.to_numeric(feature_matrix.get(column), errors="coerce")
-        for column in ol_columns
-    }
-    ol_metrics = {
-        f"{column}_coverage": float(series.notna().mean()) if len(series) else 0.0
-        for column, series in ol_series.items()
-    }
-    ol_metrics.update(
-        {
-            f"{column}_std": float(series.std(ddof=0)) if len(series) else 0.0
-            for column, series in ol_series.items()
-        }
-    )
-    ol_nonzero = sum(
-        int(series.fillna(0).abs().gt(1e-12).sum())
-        for series in ol_series.values()
-    )
-    ol_metrics["combined_nonzero_rows"] = ol_nonzero
-    ol_live_passed = (
-        all(value == 1.0 for key, value in ol_metrics.items() if key.endswith("_coverage"))
-        and (week == 1 or ol_nonzero > 0)
-        and (week == 1 or any(
-            value > 1e-6 for key, value in ol_metrics.items() if key.endswith("_std")
-        ))
+    ol_live_passed, ol_metrics = evaluate_ol_live_signal(
+        feature_matrix, personnel_week, prior_schedule, week,
+        args.project_root / "backtests" / "nfl_weekly_matchup_source_cache_v2_live_2026.sqlite",
+        feature_db=feature_db,
     )
     add_integrity_check(
         details,
         "OL",
         "ol_live_signal",
         ol_live_passed,
-        "100% coverage and non-degenerate after Week 1",
+        "100% finite coverage; live variation or verified one-prior-game OL initialization",
         ol_metrics,
-        "Live OL continuity, stability, and health fields cannot be missing or dead.",
+        "OL signals require live variation, except the existing one-game 1/1/0 "
+        "initialization verified against team metadata and prior OL snap participation.",
     )
 
     form = table_or_empty(args.db_path, FORM_TABLE, "FORM", details)
@@ -1731,9 +2179,9 @@ def build_integrity_certificate(
         details,
     )
     structural_week = frame_for_season_week(structural, week)
-    structural_ids = set(
-        structural_week.get("game_id", pd.Series(dtype=str)).astype(str)
-    )
+    structural_source_ids = structural_week.get("game_id", pd.Series(dtype=str)).astype(str)
+    structural_schedule_ids = reconcile_schedule_ids(structural_week, target_schedule)
+    structural_ids = set(structural_schedule_ids.dropna())
     structural_run_ids = {
         value
         for value in structural_week.get(
@@ -1868,6 +2316,9 @@ def build_integrity_certificate(
     ).astype(str)
     learned_consensus_ok = (
         len(structural_week) == len(target_schedule)
+        and structural_schedule_ids.notna().all()
+        and structural_schedule_ids.nunique() == len(structural_week)
+        and structural_source_ids.nunique() == len(structural_week)
         and structural_ids == target_ids
         and len(structural_run_ids) == 1
         and predictor_learned_lineage
@@ -1934,7 +2385,9 @@ def build_integrity_certificate(
         },
         {
             "rows": len(structural_week),
-            "game_ids": sorted(structural_ids),
+            "source_game_ids": sorted(set(structural_source_ids)),
+            "reconciled_schedule_game_ids": sorted(structural_ids),
+            "unmatched_rows": int(structural_schedule_ids.isna().sum()),
             "structural_run_ids": sorted(structural_run_ids),
             "predictor_learned_lineage": predictor_learned_lineage,
             "home_cutoffs": sorted(home_cutoff.dropna().unique().tolist()),
@@ -1966,6 +2419,9 @@ def build_integrity_certificate(
     portfolio["contest_rank"] = pd.to_numeric(
         portfolio.get("contest_rank"), errors="coerce"
     ).astype("Int64")
+    portfolio["_audit_schedule_game_id"] = reconcile_schedule_ids(
+        portfolio, target_schedule
+    )
     counts = {
         int(key): int(value)
         for key, value in portfolio.groupby("entry_number").size().to_dict().items()
@@ -1977,6 +2433,11 @@ def build_integrity_certificate(
         if not pd.isna(entry)
     } if "production_selection_policy" in portfolio.columns else {}
     unique_games_by_entry = {
+        int(entry): int(group["_audit_schedule_game_id"].nunique())
+        for entry, group in portfolio.groupby("entry_number")
+        if not pd.isna(entry)
+    }
+    source_unique_games_by_entry = {
         int(entry): int(group["game_id"].astype(str).nunique())
         for entry, group in portfolio.groupby("entry_number")
         if not pd.isna(entry)
@@ -1986,8 +2447,10 @@ def build_integrity_certificate(
         for row in target_schedule.itertuples(index=False)
     }
     selected_teams_valid = all(
-        normalize_team(row.selected_team) in matchup_teams.get(str(row.game_id), set())
-        for row in portfolio.itertuples(index=False)
+        normalize_team(selected_team) in matchup_teams.get(str(game_id), set())
+        for selected_team, game_id in zip(
+            portfolio["selected_team"], portfolio["_audit_schedule_game_id"]
+        )
     ) if "selected_team" in portfolio.columns else False
     card_statuses = {
         int(entry): sorted(group["card_status"].astype(str).unique().tolist())
@@ -2001,9 +2464,11 @@ def build_integrity_certificate(
         and set(portfolio[portfolio["entry_number"].eq(2)]["contest_rank"].dropna().astype(int)) == set(range(1, 6))
         and policies == {1: [ENTRY_1_POLICY], 2: [ENTRY_2_POLICY]}
         and unique_games_by_entry == {1: 5, 2: 5}
+        and source_unique_games_by_entry == {1: 5, 2: 5}
         and selected_teams_valid
         and card_statuses == {1: ["OFFICIAL_TOP5"], 2: ["CEILING_TOP5"]}
-        and set(portfolio.get("game_id", pd.Series(dtype=str)).astype(str)).issubset(target_ids)
+        and portfolio["_audit_schedule_game_id"].notna().all()
+        and set(portfolio["_audit_schedule_game_id"]).issubset(target_ids)
         and pd.to_numeric(
             portfolio.get("contest_only_model"), errors="coerce"
         ).eq(1).all()
@@ -2028,14 +2493,20 @@ def build_integrity_certificate(
             "counts": counts,
             "policies": policies,
             "unique_games_by_entry": unique_games_by_entry,
+            "source_unique_games_by_entry": source_unique_games_by_entry,
             "card_statuses": card_statuses,
             "selected_teams_valid": selected_teams_valid,
+            "source_game_ids": sorted(set(portfolio["game_id"].astype(str))),
+            "reconciled_schedule_game_ids": sorted(set(
+                portfolio["_audit_schedule_game_id"].dropna()
+            )),
         },
         "The certified deliverable is exactly the approved five picks for each frozen entry.",
     )
 
     metrics: dict[str, Any] = {
         "schedule_source": schedule_source,
+        "prior_schedule_result_reconciliation": prior_result_audit,
         "prediction_cutoff_week": cutoff_week,
         "scheduled_target_games": len(target_schedule),
         "expected_prior_games": len(prior_ids),
@@ -2049,6 +2520,10 @@ def build_integrity_certificate(
         "predictor_created_at": predictor_audit.get("created_at"),
         "feature_source": feature_source,
         "qb_identity_match_rate": identity_rate,
+        "qb_identity_scope": (
+            "WEEK1_NO_CURRENT_SEASON_HISTORY" if week == 1 else "CURRENT_SEASON"
+        ),
+        "week1_history_contract_passed": bool(week1_contract) if week == 1 else None,
         **qb_metrics,
         **model_file_metrics,
     }
@@ -2199,10 +2674,16 @@ def certify_week(
         f"{payload['metrics']['captured_prior_games']}/"
         f"{payload['metrics']['expected_prior_games']}"
     )
-    print(
-        f"[CIRCA_WEEKLY] QB identity: "
-        f"{payload['metrics']['qb_identity_match_rate']:.1%}"
-    )
+    if week == 1:
+        print(
+            "[CIRCA_WEEKLY] Same-season QB identity: NOT APPLICABLE (Week 1); "
+            "authoritative prior QB starters are checked separately."
+        )
+    else:
+        print(
+            f"[CIRCA_WEEKLY] QB identity: "
+            f"{payload['metrics']['qb_identity_match_rate']:.1%}"
+        )
     print(f"[CIRCA_WEEKLY] Certificate: {certificate_path}")
     print(
         f"[CIRCA_WEEKLY] SQLite audit tables: {INTEGRITY_RUN_TABLE}, "
@@ -2271,6 +2752,25 @@ def run_self_test() -> int:
     schedule = standardize_database_schedule(raw)
     if len(schedule) != 6:
         raise AssertionError("Schedule standardization failed.")
+    full_name_items = list(NFL_FULL_TEAM_NAMES.items())[:32]
+    full_name_schedule = standardize_database_schedule(
+        pd.DataFrame(
+            {
+                "season": [SEASON] * 16,
+                "week": [1] * 16,
+                "home_team": [name for name, _ in full_name_items[:16]],
+                "away_team": [name for name, _ in full_name_items[16:]],
+                "game_date": ["2026-09-13"] * 16,
+            }
+        )
+    )
+    normalized_full_name_teams = set(full_name_schedule["home_team"]) | set(
+        full_name_schedule["away_team"]
+    )
+    if normalized_full_name_teams != CANONICAL_NFL_TEAMS:
+        raise AssertionError(
+            "All-32 full franchise-name schedule normalization failed."
+        )
     if detect_current_week(schedule, None, dt.date(2026, 9, 10)) != 1:
         raise AssertionError("Automatic current-week detection failed.")
     if revision_number("Contest-Point-Spreads-3.pdf") != 3:
@@ -2494,6 +2994,8 @@ def run_self_test() -> int:
                         "entry_number": entry_number,
                         "contest_rank": rank,
                         "game_id": row.game_id,
+                        "away_team": row.away_team,
+                        "home_team": row.home_team,
                         "selected_team": row.away_team,
                         "production_selection_policy": policy,
                         "card_status": (
