@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 SEASON = 2026
-VERSION = "v1_3_unique_ol_starter_assignment"
+VERSION = "v1_4_corroborated_roster_reconciliation"
 AVAILABILITY_TABLE = "nfl_live_player_availability_2026"
 SOURCE_TABLE = "nfl_live_roster_source_audit_2026"
 REFRESH_STATUS_TABLE = "nfl_live_roster_refresh_status_2026"
@@ -439,6 +439,121 @@ def select_ol_starters(team: str, nodes: list[tuple[str, dict]],
     return best_plans[0]
 
 
+def reconcile_depth_only_duplicates(master: pd.DataFrame, sources: dict[str, dict],
+                                    source_audit: pd.DataFrame) -> dict[str, set[str]]:
+    """Exclude a contradicted backup depth entry only with independent ownership.
+
+    A unique ESPN roster and a fresh exact-ID canonical master must agree. An
+    opposing depth-only backup cannot supersede both. Real roster conflicts,
+    QB/OL entries and possible starters remain fatal. Raw source payloads and
+    their position-specific ranks are never rewritten.
+    """
+    excluded = {team: set() for team in sources}
+    source_audit["roster_assignment_note"] = ""
+    rosters, charts, memberships = {}, {}, {}
+    for team, record in sorted(sources.items()):
+        athletes = [athlete for group in record["roster"].get("athletes", [])
+                    for athlete in group.get("items", [])]
+        roster = {text(athlete.get("id")): athlete for athlete in athletes}
+        if len(roster) != len(athletes) or "" in roster:
+            raise ValueError(f"{team}: duplicate or blank provider roster IDs")
+        rosters[team] = roster
+        charts[team] = depth_nodes(record["depthcharts"])
+        ids = set(roster)
+        for _, node in charts[team]:
+            ids.update(text(athlete.get("id")) for athlete in node.get("athletes", []))
+        for provider_id in ids - {""}:
+            memberships.setdefault(provider_id, []).append(team)
+
+    for provider_id, teams in sorted(memberships.items()):
+        if len(teams) < 2:
+            continue
+        owners = [team for team in teams if provider_id in rosters[team]]
+        evidence = []
+        for team in teams:
+            entries = [f"{slot.upper()}:{rank}" for slot, node in charts[team]
+                       for rank, athlete in enumerate(node.get("athletes", []), 1)
+                       if text(athlete.get("id")) == provider_id]
+            status = injury_state(rosters[team].get(provider_id, {}), [])['live_injury_status']
+            evidence.append(f"{team} roster={'yes' if team in owners else 'no'} "
+                            f"status={status if team in owners else 'not-listed'} "
+                            f"depth={','.join(entries) or 'none'}")
+        matches = master[master.get("espn_id", pd.Series("", index=master.index)).map(
+            lambda value: text(value).removesuffix(".0")).eq(provider_id)]
+        player_id = text(matches.iloc[0].get("player_id")) if len(matches) == 1 else "unresolved"
+        name = text(matches.iloc[0].get("player_name")) if len(matches) == 1 else "unresolved player"
+        prefix = f"{name} (GSIS {player_id}, ESPN {provider_id}): cross-team source conflict; " + " | ".join(evidence)
+
+        def reject(reason: str) -> None:
+            raise RuntimeError("Automatic depth identity/availability errors:\n" + prefix + "; " + reason)
+
+        if len(owners) != 1:
+            reject("requires exactly one actual roster owner; no team selected")
+        owner = owners[0]
+        record = sources[owner]
+        if any(marker != "ESPN" for marker in (
+                record.get("roster_provider", "ESPN"), record["roster"].get("roster_provider", "ESPN"))):
+            reject("master-derived fallback roster is not independent ownership evidence")
+        if len(matches) != 1 or not player_id or player_id == "unresolved":
+            reject("provider ID lacks one unique canonical master identity")
+        identity = matches.iloc[0]
+        if master.player_id.map(text).eq(player_id).sum() != 1:
+            reject("canonical master identity is duplicated")
+        master_team = TEAM_ALIASES.get(text(identity.get("team")).upper(), text(identity.get("team")).upper())
+        if master_team != owner:
+            reject(f"canonical master team {master_team or 'missing'} does not match roster owner {owner}")
+        master_season = pd.to_numeric(identity.get("season"), errors="coerce")
+        if pd.isna(master_season) or master_season != SEASON:
+            reject("canonical master season is missing or incorrect")
+        if text(identity.get("roster_refresh_status")) not in {"LIVE", "REUSED_RECENT_CACHE", "EXISTING_RAW_ROSTER"}:
+            reject("canonical roster source provenance is unverified")
+        try:
+            master_stamp = utc(identity.get("roster_source_as_of_utc"))
+            now = pd.Timestamp.now(tz="UTC")
+            if now - master_stamp > pd.Timedelta(hours=24) or master_stamp - now > pd.Timedelta(minutes=5):
+                reject("canonical roster source is stale or future dated")
+            for team in teams:
+                validate_source_age(sources[team], team)
+        except (ValueError, TypeError, SourceUnavailable) as exc:
+            reject(f"ownership source freshness is not verified: {exc}")
+        canonical = text(rosters[owner][provider_id].get("canonical_player_id"))
+        if canonical and canonical != player_id:
+            reject("actual roster canonical ID conflicts with the master")
+        for team in teams:
+            if team == owner:
+                continue
+            # Merge all chart injury records exactly as the normal mapper does;
+            # raw rank two can be the next starter when rank one is unavailable.
+            chart_by_id = {}
+            for _, node in charts[team]:
+                for athlete in node.get("athletes", []):
+                    chart_by_id.setdefault(text(athlete.get("id")), []).append(athlete)
+            for slot, node in charts[team]:
+                athletes = node.get("athletes", [])
+                ranks = [rank for rank, athlete in enumerate(athletes, 1)
+                         if text(athlete.get("id")) == provider_id]
+                if not ranks:
+                    continue
+                if slot == "qb" or slot in OL_SLOTS:
+                    reject(f"{team} {slot.upper()} conflict affects QB/OL depth; no automatic reassignment")
+                first_available = next((text(athlete.get("id")) for athlete in athletes
+                    if not injury_state(rosters[team].get(text(athlete.get("id")), athlete),
+                                        chart_by_id[text(athlete.get("id"))])["live_unavailable"]), "")
+                if 1 in ranks or first_available == provider_id:
+                    reject(f"{team} {slot.upper()} conflict affects a published or first-available starter")
+        note = (f"CORROBORATED_ROSTER_OWNER: {name} (GSIS {player_id}, ESPN {provider_id}); "
+                f"kept={owner}; excluded_depth_only={','.join(team for team in teams if team != owner)}; "
+                f"basis=unique ESPN roster plus fresh exact-ID canonical master; "
+                f"master_source_as_of_utc={master_stamp.isoformat()}; " + " | ".join(evidence))
+        for team in teams:
+            if team != owner:
+                excluded[team].add(provider_id)
+            mask = source_audit.team.eq(team)
+            source_audit.loc[mask, "roster_assignment_note"] = source_audit.loc[mask, "roster_assignment_note"].map(
+                lambda prior: " || ".join(filter(None, [text(prior), note])))
+    return excluded
+
+
 def build_live_inputs(perf: pd.DataFrame, master: pd.DataFrame,
                       sources: dict[str, dict], source_audit: pd.DataFrame,
                       normalize_name: Any) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -471,6 +586,7 @@ def build_live_inputs(perf: pd.DataFrame, master: pd.DataFrame,
     availability, qb_rows, ol_rows, errors = [], [], [], []
     source_audit["identity_issues"] = ""
     source_audit["ol_assignment_note"] = ""
+    excluded_depth_ids = reconcile_depth_only_duplicates(master, sources, source_audit)
     assigned_ids: dict[str, str] = {}
     preferred: dict[str, str] = {}
     for team, record in sorted(sources.items()):
@@ -493,7 +609,8 @@ def build_live_inputs(perf: pd.DataFrame, master: pd.DataFrame,
             raise ValueError(f"{team}: duplicate or blank provider roster IDs")
         # A depth athlete can be newly promoted before the provider's roster updates.
         for provider_id, athletes in chart_by_id.items():
-            roster_by_id.setdefault(provider_id, athletes[0])
+            if provider_id not in excluded_depth_ids[team]:
+                roster_by_id.setdefault(provider_id, athletes[0])
         mapped: dict[str, dict] = {}
         for provider_id, athlete in roster_by_id.items():
             canonical_id = text(athlete.get("canonical_player_id"))
@@ -515,7 +632,8 @@ def build_live_inputs(perf: pd.DataFrame, master: pd.DataFrame,
                 continue
             player_id = candidates[0] if candidates else ""
             if player_id and player_id in assigned_ids and assigned_ids[player_id] != team:
-                errors.append(f"{player_id}: present on two current source rosters")
+                errors.append(f"{text(identities.loc[player_id].get('player_name'))} ({player_id}): "
+                              f"present on source teams {assigned_ids[player_id]} and {team}; ESPN {provider_id}")
                 continue
             if player_id:
                 assigned_ids[player_id] = team

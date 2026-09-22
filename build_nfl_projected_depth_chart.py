@@ -54,7 +54,7 @@ import nfl_live_depth_2026 as live_depth
 
 SEASON = 2026
 BUILD_ID = "NFL_PROJECTED_DEPTH_CHART_2026_CANONICAL_V5"
-VERSION = "v5_4_unique_ol_starter_assignment"
+VERSION = "v5_5_corroborated_roster_reconciliation"
 SOURCE_UNAVAILABLE_EXIT_CODE = 20
 
 DEFAULT_PROJECT_ROOT = Path(r"C:\Users\maxxs\Downloads\Football Files\nfl_model")
