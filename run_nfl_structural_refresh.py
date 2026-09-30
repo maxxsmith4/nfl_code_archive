@@ -62,7 +62,12 @@ from typing import Iterable
 
 
 SEASON = 2026
-RUNNER_VERSION = "canonical_structural_refresh_v1"
+RUNNER_VERSION = "canonical_structural_refresh_v1_1_source_outage_partial"
+SOURCE_UNAVAILABLE_EXIT_CODE = 20
+SOURCE_STATUS_TABLE = "nfl_live_roster_refresh_status_2026"
+DEPTH_DEPENDENT_STEPS = {
+    "ol_continuity", "team_units", "team_strength", "power_ratings",
+}
 
 PROJECT_ROOT = Path(
     r"C:\Users\maxxs\Downloads\Football Files\nfl_model"
@@ -461,6 +466,69 @@ def validate_expected_table(
     }
 
 
+def validate_source_outage(
+    connection: sqlite3.Connection,
+    step_started_utc: dt.datetime,
+) -> str:
+    """Accept exit 20 only for a recorded outage from this depth attempt."""
+    if not table_exists(connection, SOURCE_STATUS_TABLE):
+        raise RuntimeError("Depth exit 20 has no availability refresh marker.")
+    rows = connection.execute(
+        f'SELECT season, status, attempted_at_utc, error FROM "{SOURCE_STATUS_TABLE}"'
+    ).fetchall()
+    if len(rows) != 1 or int(rows[0][0]) != SEASON or rows[0][1] != "SOURCE_UNAVAILABLE":
+        raise RuntimeError("Depth exit 20 lacks a valid SOURCE_UNAVAILABLE marker.")
+    try:
+        attempted = dt.datetime.fromisoformat(str(rows[0][2]).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError("Depth outage marker has an invalid timestamp.") from exc
+    if attempted.tzinfo is None or not (
+        step_started_utc - dt.timedelta(seconds=5)
+        <= attempted.astimezone(dt.timezone.utc)
+        <= dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)
+    ):
+        raise RuntimeError("Depth outage marker is not from this refresh attempt.")
+    reason = str(rows[0][3] or "").strip()
+    if not reason:
+        raise RuntimeError("Depth outage marker has no source failure reason.")
+    return reason
+
+
+def validate_existing_structure(
+    connection: sqlite3.Connection,
+    logger: TeeLogger,
+) -> None:
+    """Require a complete prior 32-team snapshot before partial completion."""
+    for step in PIPELINE_STEPS:
+        if step.key != "depth_chart" and step.key not in DEPTH_DEPENDENT_STEPS:
+            continue
+        for expected in step.expected_tables:
+            metrics = validate_expected_table(connection, expected)
+            logger.write(
+                f"[STRUCTURAL] Retained {metrics['table_name']}: "
+                f"rows={metrics['rows']:,}; not refreshed."
+            )
+
+    depth = connection.execute(
+        """SELECT COUNT(*), COUNT(DISTINCT player_id), COUNT(DISTINCT team),
+                  SUM(CASE WHEN qb_authoritative_starter=1 THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN ol_authoritative_starter=1 THEN 1 ELSE 0 END),
+                  MAX(date_imported)
+           FROM nfl_projected_depth_chart_2026 WHERE season=?""",
+        (SEASON,),
+    ).fetchone()
+    if (int(depth[0]) != int(depth[1]) or int(depth[2]) != 32
+            or int(depth[3] or 0) != 32 or int(depth[4] or 0) != 160):
+        raise RuntimeError(
+            "Prior depth snapshot is incomplete or has duplicate players; "
+            "cannot complete using frozen structural inputs."
+        )
+    logger.write(
+        "[STRUCTURAL] Retained depth snapshot: 32 teams, 32 QB starters, "
+        f"160 OL starters; last build={depth[5]}."
+    )
+
+
 def insert_audit(
     connection: sqlite3.Connection,
     table_name: str,
@@ -503,7 +571,7 @@ def run_step(
     logger: TeeLogger,
     run_id: str,
     connection: sqlite3.Connection,
-) -> None:
+) -> str:
     script_path = PROJECT_ROOT / step.filename
     command = [
         str(python_executable),
@@ -520,33 +588,68 @@ def run_step(
     )
 
     started = dt.datetime.now()
+    started_utc = dt.datetime.now(dt.timezone.utc)
     started_perf = time.perf_counter()
 
-    process = subprocess.Popen(
-        command,
-        cwd=str(PROJECT_ROOT),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        env={
-            **os.environ,
-            "PYTHONUNBUFFERED": "1",
-            "NFL_STRUCTURAL_REFRESH_RUN_ID": run_id,
-        },
-    )
+    attempts = 2 if step.key == "depth_chart" else 1
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            logger.write("[STRUCTURAL] Retrying depth source once after exit 20.")
+        process = subprocess.Popen(
+            command,
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            env={
+                **os.environ,
+                "PYTHONUNBUFFERED": "1",
+                "NFL_STRUCTURAL_REFRESH_RUN_ID": run_id,
+            },
+        )
 
-    assert process.stdout is not None
-    for line in process.stdout:
-        logger.raw(line)
+        assert process.stdout is not None
+        for line in process.stdout:
+            logger.raw(line)
 
-    return_code = int(process.wait())
+        return_code = int(process.wait())
+        if return_code != SOURCE_UNAVAILABLE_EXIT_CODE:
+            break
+
     elapsed = time.perf_counter() - started_perf
     completed = dt.datetime.now()
 
-    status = "SUCCESS" if return_code == 0 else "FAILED"
+    source_outage = step.key == "depth_chart" and return_code == SOURCE_UNAVAILABLE_EXIT_CODE
+    status = "SOURCE_UNAVAILABLE" if source_outage else "SUCCESS" if return_code == 0 else "FAILED"
+    if source_outage:
+        try:
+            reason = validate_source_outage(connection, started_utc)
+            validate_existing_structure(connection, logger)
+        except Exception:
+            status = "FAILED"
+            raise
+        finally:
+            insert_audit(
+                connection, STEP_AUDIT_TABLE,
+                {
+                    "run_id": run_id, "runner_version": RUNNER_VERSION,
+                    "step_key": step.key, "script_filename": step.filename,
+                    "status": status, "return_code": return_code,
+                    "started_at": started.isoformat(timespec="seconds"),
+                    "completed_at": completed.isoformat(timespec="seconds"),
+                    "elapsed_seconds": float(elapsed),
+                },
+            )
+        logger.write(f"[STRUCTURAL] Source unavailable: {reason}")
+        logger.write(
+            "[STRUCTURAL] Current depth was not rebuilt. Subsequent depth-dependent "
+            "stages will retain the validated prior snapshot."
+        )
+        return status
+
     insert_audit(
         connection,
         STEP_AUDIT_TABLE,
@@ -578,6 +681,7 @@ def run_step(
             f"[STRUCTURAL] Validated {metrics['table_name']}: "
             f"rows={metrics['rows']:,}"
         )
+    return status
 
 
 def validate_environment(
@@ -677,6 +781,7 @@ def main() -> int:
     started_perf = time.perf_counter()
     status = "FAILED"
     failed_step = None
+    partial_source_outage = False
 
     try:
         acquire_lock(lock_path, run_id)
@@ -696,26 +801,58 @@ def main() -> int:
 
         for step in steps:
             failed_step = step.key
-            run_step(
+            if partial_source_outage and step.key in DEPTH_DEPENDENT_STEPS:
+                skipped_at = dt.datetime.now().isoformat(timespec="seconds")
+                insert_audit(
+                    connection, STEP_AUDIT_TABLE,
+                    {
+                        "run_id": run_id, "runner_version": RUNNER_VERSION,
+                        "step_key": step.key, "script_filename": step.filename,
+                        "status": "SKIPPED_SOURCE_UNAVAILABLE", "return_code": None,
+                        "started_at": skipped_at, "completed_at": skipped_at,
+                        "elapsed_seconds": 0.0,
+                    },
+                )
+                logger.write(
+                    f"[STRUCTURAL] Skipped {step.key}: prior validated output "
+                    "retained after availability source outage."
+                )
+                failed_step = None
+                continue
+            step_status = run_step(
                 step,
                 python_executable,
                 logger,
                 run_id,
                 connection,
             )
+            if step_status == "SOURCE_UNAVAILABLE":
+                partial_source_outage = True
             failed_step = None
 
         validate_final_power(connection)
-        status = "SUCCESS"
+        status = "PARTIAL_SOURCE_UNAVAILABLE" if partial_source_outage else "SUCCESS"
 
-        logger.section("[STRUCTURAL] REFRESH COMPLETE")
-        logger.write(
-            "[STRUCTURAL] The immutable preseason form snapshot "
-            "was not replaced."
-        )
-        logger.write(
-            "[STRUCTURAL] Next command: run_nfl_weekly_form.py"
-        )
+        if partial_source_outage:
+            logger.section("[STRUCTURAL] PARTIAL COMPLETION — SOURCE UNAVAILABLE")
+            logger.write(
+                "[STRUCTURAL] Upstream player inputs completed; the prior 32-team "
+                "depth, OL, unit, strength, and power tables were validated and retained."
+            )
+            logger.write(
+                "[STRUCTURAL] No current depth or roster-adjusted lines are certified. "
+                "Run the normal weekly pipeline for its baseline-only fallback. "
+                "Rerun --start-at depth_chart after the source recovers."
+            )
+        else:
+            logger.section("[STRUCTURAL] REFRESH COMPLETE")
+            logger.write(
+                "[STRUCTURAL] The immutable preseason form snapshot "
+                "was not replaced."
+            )
+            logger.write(
+                "[STRUCTURAL] Next command: run_nfl_weekly_form.py"
+            )
         return 0
 
     except Exception as exc:

@@ -5,7 +5,9 @@ The runner reuses the audited official-PDF discovery and OCR implementation in
 ``build_backtest_nfl_circa_contest_lines.py``.  It never substitutes a
 sportsbook line, never accepts a non-Circa host, and does not launch the
 production predictor unless every scheduled game for the requested week has a
-valid reconciled contest spread.
+valid reconciled contest spread. A live-only, audited half-point tie recovery
+requires a directly read symmetric pair plus corroboration from another OCR
+mode; it never changes the historical parser or frozen prediction models.
 
 After prediction, a fail-closed weekly certificate independently verifies the
 2026 source-game capture, prior-week cutoff, form, learned-consensus projection,
@@ -43,7 +45,7 @@ import pandas as pd
 
 
 BUILD_ID = "NFL_CIRCA_WEEKLY_2026_CANONICAL_V1"
-VERSION = "v1_6_prior_result_reconciliation_single_game_ol_certificate"
+VERSION = "v1_7_two_sided_ocr_half_point_recovery"
 SEASON = 2026
 SEASON_ROMAN = "VIII"
 
@@ -804,6 +806,243 @@ def validate_complete_board(
         raise RuntimeError("At least one parsed line lacks an official Circa PDF URL.")
 
 
+def recover_live_half_point_ties(
+    selected_manifest: pd.DataFrame,
+    attempts: pd.DataFrame,
+    team_lines: pd.DataFrame,
+    raw_game_lines: pd.DataFrame,
+    game_lines: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Recover only corroborated, two-sided HALF vs derived WHOLE OCR ties.
+
+    This is a live-runner-only filter. It never changes a spread, manufactures
+    an OCR vote, fills a missing game, or changes the historical parser. Both
+    original raw values and all rejected evidence are retained in the pull
+    audit. OCR modes are corroboration, not statistically independent samples.
+
+    All of the following are required: an unresolved game; exactly two tied
+    readings with >=2 distinct modes each; a unique directly read symmetric
+    pair supporting the half point; another mode supporting that value; and
+    competing whole-point readings that ALL derive a missing opposing side.
+    The whole value must be exactly the half value with its fraction dropped.
+    Conflicting direct pairs, source revisions, sign changes, or larger gaps
+    remain unresolved. Previously accepted games are never considered.
+    """
+    repaired = raw_game_lines.copy(deep=True).reset_index(drop=True)
+    unresolved = game_lines[
+        pd.to_numeric(game_lines["line_valid"], errors="coerce").fillna(0).ne(1)
+    ]
+    if unresolved.empty:
+        return repaired, []
+    if len(selected_manifest) != 1:
+        raise RuntimeError("Live OCR recovery requires exactly one official PDF.")
+    source = selected_manifest.iloc[0]
+    source_hash = str(source["sha256"])
+    source_path = str(source["local_path"])
+    source_url = str(source["url"])
+    if sha256_file(Path(source_path)) != source_hash:
+        raise RuntimeError("Official PDF hash changed before live OCR recovery.")
+    if attempts["attempt_id"].duplicated().any():
+        raise RuntimeError("Duplicate attempt IDs cannot be used as OCR votes.")
+    metadata = attempts.set_index("attempt_id")
+    keys = ["season", "week", "game_id", "home_team", "away_team"]
+    recoveries: list[dict[str, Any]] = []
+    for _, game in unresolved.iterrows():
+        # Recovery may not cross weeks, seasons, games, or PDF revisions.
+        if any(int(game[k]) != int(source[k]) for k in ("season", "week")):
+            continue
+        mask = pd.to_numeric(repaired["line_valid"], errors="coerce").eq(1)
+        for key in keys:
+            mask &= repaired[key].eq(game[key])
+        group = repaired.loc[mask].copy()
+        if len(group) < 4 or group["attempt_id"].duplicated().any():
+            continue
+        if group["psm"].duplicated().any():
+            continue
+        if not group["attempt_id"].isin(metadata.index).all():
+            continue
+        source_ok = True
+        for row in group.itertuples(index=False):
+            meta = metadata.loc[row.attempt_id]
+            if (
+                str(meta["sha256"]) != source_hash
+                or str(meta["url"]) != source_url
+                or str(meta["source_pdf"]) != source_path
+                or str(row.source_pdf) != source_path
+                or int(meta["season"]) != int(game["season"])
+                or int(meta["week"]) != int(game["week"])
+                or int(meta["psm"]) != int(row.psm)
+            ):
+                source_ok = False
+                break
+        if not source_ok:
+            continue
+        values = group[[
+            "circa_home_margin", "home_team_spread", "away_team_spread"
+        ]].apply(pd.to_numeric, errors="coerce")
+        if not np.isfinite(values.to_numpy(dtype=float)).all():
+            continue
+        if not (
+            np.allclose(values["home_team_spread"] + values["away_team_spread"], 0, atol=1e-9, rtol=0)
+            and np.allclose(values["home_team_spread"] + values["circa_home_margin"], 0, atol=1e-9, rtol=0)
+            and np.allclose(values.to_numpy() * 2, np.round(values.to_numpy() * 2), atol=1e-9, rtol=0)
+        ):
+            continue
+        margins = values["circa_home_margin"]
+        counts = margins.value_counts()
+        if len(counts) != 2 or int(counts.iloc[0]) != int(counts.iloc[1]):
+            continue
+        if int(counts.iloc[0]) < 2:
+            continue
+        direct = group["derived_side"].fillna("").astype(str).str.strip().eq("")
+        direct_margins = margins.loc[direct].unique()
+        if len(direct_margins) != 1:
+            continue
+        winner = float(direct_margins[0])
+        other = float(next(value for value in counts.index if value != winner))
+        if not (
+            math.isclose(abs(winner) % 1.0, 0.5, abs_tol=1e-9)
+            and math.isclose(abs(other) % 1.0, 0.0, abs_tol=1e-9)
+            and math.isclose(abs(winner) - abs(other), 0.5, abs_tol=1e-9)
+            and winner * other > 0
+        ):
+            continue
+        supported = group.loc[margins.eq(winner)]
+        rejected = group.loc[margins.eq(other)]
+        # Independently verify the derived/direct labels against team-level
+        # raw readings. A claimed pair cannot be made from one shared token.
+        evidence = []
+        for row in group.itertuples(index=False):
+            teams = team_lines[
+                team_lines["attempt_id"].eq(row.attempt_id)
+                & team_lines["season"].eq(row.season)
+                & team_lines["week"].eq(row.week)
+                & team_lines["team"].isin([row.home_team, row.away_team])
+            ]
+            if len(teams) != 2 or teams["team"].nunique() != 2:
+                break
+            teams = teams.set_index("team")
+            if not (
+                pd.to_numeric(teams["team_found"], errors="coerce").eq(1).all()
+                and pd.to_numeric(teams["team_match_score"], errors="coerce").ge(0.9).all()
+                and teams["source_pdf"].astype(str).eq(source_path).all()
+                and pd.to_numeric(teams["psm"], errors="coerce").eq(row.psm).all()
+            ):
+                break
+            raw = pd.to_numeric(teams["team_spread"], errors="coerce")
+            h, a = float(raw.loc[row.home_team]), float(raw.loc[row.away_team])
+            hf, af = bool(np.isfinite(h)), bool(np.isfinite(a))
+            derived = "" if pd.isna(row.derived_side) else str(row.derived_side).strip()
+            expected_derived = "" if hf and af else (
+                "AWAY_FROM_HOME" if hf else "HOME_FROM_AWAY" if af else "NO_SIDES"
+            )
+            if derived != expected_derived:
+                break
+            if hf and not math.isclose(h, float(row.home_team_spread), abs_tol=1e-9):
+                break
+            if af and not math.isclose(a, float(row.away_team_spread), abs_tol=1e-9):
+                break
+            if hf and af:
+                if (
+                    teams["odds_word_index"].isna().any()
+                    or teams["odds_word_index"].nunique() != 2
+                    or teams["team_word_index"].isna().any()
+                    or teams["team_word_index"].nunique() != 2
+                ):
+                    break
+            evidence.append({
+                "attempt_id": str(row.attempt_id), "psm": int(row.psm),
+                "home_spread": float(row.home_team_spread),
+                "away_spread": float(row.away_team_spread),
+                "derived_side": derived or None,
+                "home_raw_token": json_value(teams.loc[row.home_team, "spread_ocr_text"]),
+                "away_raw_token": json_value(teams.loc[row.away_team, "spread_ocr_text"]),
+                "home_raw_spread": h if hf else None,
+                "away_raw_spread": a if af else None,
+                "accepted_for_reconciliation": float(row.circa_home_margin) == winner,
+            })
+        if len(evidence) != len(group):
+            continue
+        # Keep original spread values; only disqualify the demonstrably weaker
+        # one-sided integer readings for this unresolved game in this PDF.
+        repaired.loc[rejected.index, "line_valid"] = 0
+        recovery = {key: json_value(game[key]) for key in keys}
+        recovery.update({
+            "policy": "TWO_SIDED_CORROBORATED_HALF_POINT_TIE_V1",
+            "official_pdf_sha256": source_hash, "official_pdf_url": source_url,
+            "official_pdf_path": source_path,
+            "home_spread": -winner, "away_spread": winner,
+            "supporting_psms": sorted(int(v) for v in supported["psm"]),
+            "direct_pair_psms": sorted(int(v) for v in group.loc[direct, "psm"]),
+            "rejected_one_sided_psms": sorted(int(v) for v in rejected["psm"]),
+            "original_valid_attempts": len(group),
+            "original_margin_counts": {str(float(k)): int(v) for k, v in counts.items()},
+            "evidence": evidence,
+        })
+        recoveries.append(recovery)
+    return repaired, recoveries
+
+
+def finalize_live_board(
+    historical: ModuleType,
+    selected_manifest: pd.DataFrame,
+    schedule_week: pd.DataFrame,
+    attempts: pd.DataFrame,
+    team_lines: pd.DataFrame,
+    raw_game_lines: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Original reconciliation, narrow live recovery, then unchanged guards."""
+    original, week_audit = historical.finalize_lines(
+        schedule_week, attempts, raw_game_lines, pd.DataFrame()
+    )
+    filtered, recoveries = recover_live_half_point_ties(
+        selected_manifest, attempts, team_lines, raw_game_lines, original
+    )
+    game_lines = original
+    if recoveries:
+        game_lines, week_audit = historical.finalize_lines(
+            schedule_week, attempts, filtered, pd.DataFrame()
+        )
+        # Recovery must leave every previously valid game's identity and line
+        # unchanged. It may only restore the explicitly documented tie rows.
+        keys = ["season", "week", "game_id", "away_team", "home_team"]
+        accepted = original[original["line_valid"].eq(1)][keys + ["circa_home_margin"]]
+        check = accepted.merge(
+            game_lines[keys + ["circa_home_margin", "line_valid"]],
+            on=keys, how="left", suffixes=("_old", "_new"), validate="one_to_one",
+        )
+        if not (
+            check["line_valid"].eq(1).all()
+            and np.allclose(check["circa_home_margin_old"], check["circa_home_margin_new"], atol=1e-9, rtol=0)
+        ):
+            raise RuntimeError("Live OCR recovery altered a previously valid contest line.")
+        for recovery in recoveries:
+            mask = pd.Series(True, index=game_lines.index)
+            for key in keys:
+                mask &= game_lines[key].eq(recovery[key])
+            match = game_lines.loc[mask]
+            if not (
+                len(match) == 1 and int(match.iloc[0]["line_valid"]) == 1
+                and math.isclose(float(match.iloc[0]["home_team_spread"]), recovery["home_spread"], abs_tol=1e-9)
+            ):
+                raise RuntimeError("Corroborated OCR recovery did not reconcile to the expected game.")
+            game_lines.loc[mask, "ocr_reconciliation"] = "LIVE_PAIRED_HALF_POINT_RECOVERY"
+            game_lines.loc[mask, "ocr_support_count"] = len(recovery["supporting_psms"])
+            game_lines.loc[mask, "ocr_attempt_count"] = recovery["original_valid_attempts"]
+            print(
+                f"[CIRCA_WEEKLY] OCR half-point recovery: {recovery['away_team']} @ "
+                f"{recovery['home_team']} | home_spread={recovery['home_spread']:+g} | "
+                f"supporting modes={recovery['supporting_psms']} | "
+                f"direct-pair modes={recovery['direct_pair_psms']} | "
+                f"rejected one-sided modes={recovery['rejected_one_sided_psms']}"
+            )
+        week_audit["unanimous_lines"] = int(game_lines["ocr_reconciliation"].eq("UNANIMOUS").sum())
+        week_audit["live_paired_half_point_recoveries"] = len(recoveries)
+    game_lines.attrs["live_ocr_recoveries"] = recoveries
+    validate_complete_board(game_lines, week_audit, schedule_week, historical)
+    return game_lines, week_audit
+
+
 def fetch_board_once(
     args: argparse.Namespace,
     historical: ModuleType,
@@ -820,13 +1059,9 @@ def fetch_board_once(
     )
     if attempts.empty or raw_game_lines.empty:
         raise RuntimeError("The official PDF downloaded but produced no OCR lines.")
-    game_lines, week_audit = historical.finalize_lines(
-        schedule_week,
-        attempts,
-        raw_game_lines,
-        pd.DataFrame(),
+    game_lines, _week_audit = finalize_live_board(
+        historical, selected_manifest, schedule_week, attempts, team_lines, raw_game_lines
     )
-    validate_complete_board(game_lines, week_audit, schedule_week, historical)
     return selected_manifest, attempts, team_lines, game_lines
 
 
@@ -889,6 +1124,9 @@ def save_live_outputs(
         "official_pdf_sha256": sha256_file(source_pdf),
         "official_pdf_discovery_method": str(source["discovery_method"]),
         "ocr_attempts": int(attempts["attempt_id"].nunique()),
+        "live_ocr_recovery_policy": "TWO_SIDED_CORROBORATED_HALF_POINT_TIE_V1",
+        "live_ocr_recovery_count": len(game_lines.attrs.get("live_ocr_recoveries", [])),
+        "live_ocr_recoveries": json_value(game_lines.attrs.get("live_ocr_recoveries", [])),
         "line_csv_path": str(lines_path),
         "line_csv_sha256": sha256_file(lines_path),
         "created_at": now_string(),
@@ -2740,7 +2978,103 @@ def preflight(
     print("[CIRCA_WEEKLY] Files modified: NO")
 
 
+def run_live_ocr_recovery_self_test() -> None:
+    """Network-free recovery guards; production never reads these fixtures."""
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        pdf = Path(temporary_directory) / "self_test_official.pdf"
+        pdf.write_bytes(b"synthetic-live-ocr-self-test")
+        digest = sha256_file(pdf)
+        url = "https://www.circasports.com/wp-content/uploads/2026/09/self-test.pdf"
+        manifest = pd.DataFrame([{
+            "season": SEASON, "week": 3, "sha256": digest,
+            "local_path": str(pdf), "url": url,
+        }])
+        game = {
+            "season": SEASON, "week": 3, "game_id": "OCR_SELF_TEST",
+            "home_team": "WAS", "away_team": "SEA", "line_valid": 0,
+        }
+        board = pd.DataFrame([game])
+        attempt_rows, raw_rows, team_rows = [], [], []
+        for psm, home_raw, away_raw, derived in (
+            (3, np.nan, -7.5, "HOME_FROM_AWAY"),
+            (6, 7.5, -7.5, None),
+            (11, 7.0, np.nan, "AWAY_FROM_HOME"),
+            (12, 7.0, np.nan, "AWAY_FROM_HOME"),
+        ):
+            aid = f"{digest}_psm{psm}"
+            home = home_raw if np.isfinite(home_raw) else -away_raw
+            attempt_rows.append({
+                "attempt_id": aid, "season": SEASON, "week": 3,
+                "sha256": digest, "url": url, "source_pdf": str(pdf), "psm": psm,
+            })
+            raw_rows.append({
+                **game, "attempt_id": aid, "psm": psm, "line_valid": 1,
+                "home_team_spread": home, "away_team_spread": -home,
+                "circa_home_margin": -home, "derived_side": derived,
+                "source_pdf": str(pdf),
+            })
+            for team, value, index in (("WAS", home_raw, 10), ("SEA", away_raw, 20)):
+                team_rows.append({
+                    "attempt_id": aid, "season": SEASON, "week": 3,
+                    "team": team, "team_found": 1, "team_match_score": 1.0,
+                    "psm": psm, "source_pdf": str(pdf), "team_spread": value,
+                    "team_word_index": index, "odds_word_index": index + 1,
+                    "spread_ocr_text": f"{value:+g}" if np.isfinite(value) else None,
+                })
+        attempts, raw, teams = map(pd.DataFrame, (attempt_rows, raw_rows, team_rows))
+        original = raw.copy(deep=True)
+        fixed, recovered = recover_live_half_point_ties(manifest, attempts, teams, raw, board)
+        if len(recovered) != 1 or fixed["line_valid"].tolist() != [1, 1, 0, 0]:
+            raise AssertionError("Corroborated two-sided half-point tie was not recovered.")
+        if recovered[0]["home_spread"] != 7.5 or recovered[0]["direct_pair_psms"] != [6]:
+            raise AssertionError("OCR recovery changed the spread orientation or evidence.")
+        pd.testing.assert_frame_equal(raw, original)
+        pd.testing.assert_frame_equal(fixed.drop(columns="line_valid"), raw.drop(columns="line_valid"))
+
+        def reject(candidate_raw: pd.DataFrame, candidate_teams: pd.DataFrame, label: str) -> None:
+            result, records = recover_live_half_point_ties(
+                manifest, attempts, candidate_teams, candidate_raw, board
+            )
+            if records:
+                raise AssertionError(f"Unsafe OCR recovery was accepted: {label}.")
+            pd.testing.assert_frame_equal(result, candidate_raw.reset_index(drop=True))
+
+        no_pair = raw.copy()
+        no_pair.loc[no_pair["psm"].eq(6), "derived_side"] = "HOME_FROM_AWAY"
+        reject(no_pair, teams, "no directly read pair")
+        conflict = raw.copy()
+        conflict.loc[conflict["psm"].eq(11), "derived_side"] = None
+        reject(conflict, teams, "conflicting direct pair")
+        duplicate = raw.copy()
+        duplicate.loc[duplicate["psm"].eq(12), "psm"] = 11
+        reject(duplicate, teams, "duplicate segmentation-mode vote")
+        bad_teams = teams.copy()
+        bad_teams.loc[bad_teams["psm"].eq(6), "odds_word_index"] = 99
+        reject(raw, bad_teams, "shared token masquerading as opposing spreads")
+        bad_source = raw.copy()
+        bad_source.loc[bad_source["psm"].eq(12), "source_pdf"] = "other-revision.pdf"
+        reject(bad_source, teams, "mixed official PDF revisions")
+        accepted_board = board.copy()
+        accepted_board["line_valid"] = 1
+        untouched, records = recover_live_half_point_ties(
+            manifest, attempts, teams, raw, accepted_board
+        )
+        if records:
+            raise AssertionError("Recovery touched an already accepted game.")
+        pd.testing.assert_frame_equal(untouched, raw)
+        pdf.write_bytes(b"changed-after-manifest")
+        try:
+            recover_live_half_point_ties(manifest, attempts, teams, raw, board)
+        except RuntimeError as exc:
+            if "hash changed" not in str(exc):
+                raise
+        else:
+            raise AssertionError("Recovery accepted a PDF with a changed hash.")
+    print("[CIRCA_WEEKLY] Live OCR recovery self-test passed.")
+
+
 def run_self_test() -> int:
+    run_live_ocr_recovery_self_test()
     raw = pd.DataFrame(
         {
             "week": [1] * 6,
