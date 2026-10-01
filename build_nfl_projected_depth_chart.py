@@ -54,7 +54,8 @@ import nfl_live_depth_2026 as live_depth
 
 SEASON = 2026
 BUILD_ID = "NFL_PROJECTED_DEPTH_CHART_2026_CANONICAL_V5"
-VERSION = "v5_5_corroborated_roster_reconciliation"
+VERSION = "v5_7_full_identity_report_corroborated_owner_review"
+EXPECTED_LIVE_DEPTH_VERSION = "v1_7_corroborated_owner_full_conflict_audit"
 SOURCE_UNAVAILABLE_EXIT_CODE = 20
 
 DEFAULT_PROJECT_ROOT = Path(r"C:\Users\maxxs\Downloads\Football Files\nfl_model")
@@ -930,8 +931,23 @@ def main() -> int:
     logger.info("[DEPTH] Version: %s", VERSION)
     logger.info("[DEPTH] Database: %s", db_path)
     attempted_at_utc = pd.Timestamp.now(tz="UTC").isoformat()
+    sources, source_audit = None, None
+
+    def surface_identity(status: str, error: str = "") -> None:
+        report = live_depth.write_identity_report(
+            project_root, sources, source_audit, status=status,
+            attempted_at_utc=attempted_at_utc, error=error)
+        logger.info("[DEPTH] Identity report: %s", output_dir / "nfl_depth_identity_report_2026.txt")
+        logger.info("[DEPTH] Cross-team scan complete=%s conflicts=%d blocking=%d",
+                    report["scan_complete"], len(report["conflicts"]), len(report["blocking_errors"]))
+        if report["review_teams"]:
+            logger.warning("[DEPTH] Identity review; current roster certification withheld. "
+                           "Supplemental adjusted lines remain withheld for identity-review teams: %s",
+                           ", ".join(report["review_teams"]))
 
     try:
+        if getattr(live_depth, "VERSION", "") != EXPECTED_LIVE_DEPTH_VERSION:
+            raise RuntimeError("Depth builder/helper version mismatch: install both files in this repair package")
         with sqlite3.connect(db_path) as conn:
             perf, master = load_inputs(conn)
             master = live_depth.attach_roster_provenance(conn, master)
@@ -980,7 +996,14 @@ def main() -> int:
             ).reset_index()
             summary.to_csv(output_dir / "nfl_projected_depth_chart_2026_summary.csv", index=False, encoding="utf-8-sig")
 
+        review_mask = source_audit["identity_issues"].fillna("").astype(str).str.strip().ne("")
+        quality = "COMPLETE_WITH_REVIEW" if review_mask.any() else "COMPLETE"
+        surface_identity(quality)
+        # Keep SUCCESS as the existing downstream completion contract. The team
+        # identity_issues and diagnostic quality carry review, not a fake failure
+        # and not a claim that every current roster scenario is certified.
         record_refresh_status(db_path, "SUCCESS", attempted_at_utc)
+        logger.info("[DEPTH] Completion quality: %s", quality)
         logger.info("[DEPTH] Canonical players: %s", f"{len(depth):,}")
         logger.info("[DEPTH] Teams: %s", depth["team"].nunique())
         logger.info("[DEPTH] Authoritative QB starters: %s", int(depth["qb_authoritative_starter"].sum()))
@@ -994,6 +1017,10 @@ def main() -> int:
     except live_depth.SourceUnavailable as exc:
         logger.error("[DEPTH] SOURCE_UNAVAILABLE: %s", exc)
         try:
+            surface_identity("SOURCE_UNAVAILABLE", str(exc))
+        except Exception as report_exc:
+            logger.error("[DEPTH] Could not write identity diagnostic: %s", report_exc)
+        try:
             record_refresh_status(db_path, "SOURCE_UNAVAILABLE", attempted_at_utc, str(exc))
         except Exception as status_exc:
             logger.error("[DEPTH] Could not record source outage safely: %s", status_exc)
@@ -1003,6 +1030,10 @@ def main() -> int:
     except Exception as exc:
         logger.error("[DEPTH] FAILED: %s", exc)
         logger.error(traceback.format_exc())
+        try:
+            surface_identity("BLOCKED", f"{type(exc).__name__}: {exc}")
+        except Exception as report_exc:
+            logger.error("[DEPTH] Could not write identity diagnostic: %s", report_exc)
         try:
             record_refresh_status(db_path, "FAILED", attempted_at_utc, f"{type(exc).__name__}: {exc}")
         except Exception as status_exc:
