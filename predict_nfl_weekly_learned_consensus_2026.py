@@ -55,6 +55,7 @@ BUILD_ID = "NFL_WEEKLY_LEARNED_CONSENSUS_2026_CANONICAL_V1"
 VERSION = "v1_3_readable_execution_csv_scope_fix"
 EXECUTION_CSV_VERSION = "v1_7_automatic_roster_review"
 ROSTER_REVIEW_VERSION = roster_review.VERSION
+QB_IDENTITY_RESOLUTION_VERSION = matchup_history.QB_IDENTITY_RESOLUTION_VERSION
 MARKET_EXECUTION_VERSION = "v1_5_explicit_market_file_authoritative"
 MODEL_VARIANT = "LEARNED_STRUCTURAL_NONLINEAR_CONSENSUS"
 
@@ -458,7 +459,11 @@ def build_personnel(
         rolling_prior = prior[max(0, len(prior) - 4) : -1]
         week_one = next((row for row in team_snapshots if row["week"] == 1), prior[0])
         identity_key = matchup_history.qb_name_match_key(current["qb_name"])
-        pbp_key = crosswalk.get(identity_key, "")
+        pbp_key = matchup_history.resolve_qb_identity(
+            crosswalk, qb_name=current["qb_name"], team=team,
+            target_season=SEASON, prediction_week=week,
+            snapshot_week=int(current["week"]),
+        )
         qb_epa, qb_cpoe, qb_games = matchup_history.weighted_qb_performance(
             team_games, SEASON, week, pbp_key, settings
         )
@@ -512,7 +517,7 @@ def build_personnel(
     personnel = pd.DataFrame(rows)
     if personnel["last_completed_game_week"].ge(week).any():
         raise RuntimeError("Personnel features include the prediction week or a future week.")
-    return personnel, crosswalk_audit
+    return personnel, matchup_history.finalize_qb_identity_audit(crosswalk, crosswalk_audit)
 
 
 def build_live_matchup_features(
@@ -1309,6 +1314,14 @@ def main() -> int:
         independent, matchup_audit, qb_audit = generate_independent_projections(
             connection, model_games, bundle, args
         )
+
+        if not args.no_csv:
+            qb_audit_path = args.project_root / "outputs" / f"nfl_qb_identity_resolution_2026_week_{week:02d}.csv"
+            qb_audit_path.parent.mkdir(parents=True, exist_ok=True)
+            qb_audit_temp = qb_audit_path.with_suffix(".tmp")
+            qb_audit.to_csv(qb_audit_temp, index=False, encoding="utf-8-sig")
+            qb_audit_temp.replace(qb_audit_path)
+            print(f"[QB_IDENTITY] Resolution audit: {qb_audit_path}")
 
         market_schedule = attach_execution_market(
             schedule, args.market_path, args.market_line_preference, week

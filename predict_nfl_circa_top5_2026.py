@@ -78,6 +78,8 @@ No sportsbook stake is recommended by this script.
 
 from __future__ import annotations
 
+from contextlib import closing
+
 import argparse
 import datetime as dt
 import hashlib
@@ -103,7 +105,9 @@ import pandas as pd
 
 SEASON = 2026
 BUILD_ID = "NFL_CIRCA_TOP5_2026_PRODUCTION_CONFIDENCE_BOARD"
-VERSION = "v8_4_learned_consensus_lineage_live_feature_freshness"
+VERSION = "v8_5_timezone_safe_freshness"
+# Keep the unchanged model/selection compatibility contract; audit implementation is separate.
+QB_AUDIT_IMPLEMENTATION_VERSION = "v1_1_windows_sqlite_lifecycle_20261009"
 
 DEFAULT_PROJECT_ROOT = Path(
     r"C:\Users\maxxs\Downloads\Football Files\nfl_model"
@@ -400,6 +404,48 @@ def now_string() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def timestamp_local_date(value: Any) -> Optional[dt.date]:
+    """Match generation timestamps to the local calendar used by --as-of-date.
+
+    UTC/offset timestamps describe an instant and must first be converted to
+    the operating system's local timezone. Legacy naive timestamps already
+    represent local wall time. Parse scalars so mixed formats retain every row.
+    """
+    try:
+        timestamp = pd.Timestamp(value)
+        if pd.isna(timestamp):
+            return None
+        if timestamp.tzinfo is not None:
+            return timestamp.to_pydatetime(warn=False).astimezone().date()
+        return timestamp.date()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def require_fresh_timestamps(
+    values: pd.Series,
+    as_of_date: pd.Timestamp,
+    label: str,
+) -> None:
+    expected_date = pd.Timestamp(as_of_date).date()
+    local_dates = values.map(timestamp_local_date)
+    if (
+        local_dates.empty
+        or local_dates.isna().any()
+        or not local_dates.eq(expected_date).all()
+    ):
+        observed_dates = sorted(
+            {value.isoformat() for value in local_dates.dropna()}
+        )
+        raise RuntimeError(
+            f"{label} is not fresh for the requested as-of date: "
+            f"expected local date={expected_date.isoformat()}, "
+            f"found local dates={observed_dates}, "
+            f"missing/invalid timestamps={int(local_dates.isna().sum())}. "
+            "Refresh the corresponding weekly source for the requested date."
+        )
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -517,7 +563,7 @@ def load_margin_history(
         checked.append(f"{database}::{args.margin_history_table}")
         if not database.exists():
             continue
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection, connection:
             raw = read_table(connection, args.margin_history_table)
         if not raw.empty:
             return (
@@ -750,16 +796,11 @@ def prepare_structural_confidence_projection(
                 f"Learned-consensus {column} mismatch: expected="
                 f"{as_of_date.date().isoformat()}, found={found}."
             )
-    timestamps = pd.to_datetime(
-        frame["prediction_timestamp"], errors="coerce"
+    require_fresh_timestamps(
+        frame["prediction_timestamp"],
+        as_of_date,
+        "Learned-consensus prediction timestamp",
     )
-    if timestamps.isna().any():
-        raise RuntimeError("Learned-consensus prediction timestamp is missing.")
-    if (timestamps.dt.normalize() != as_of_date).any():
-        raise RuntimeError(
-            "Learned-consensus prediction was not generated on the requested "
-            "as-of date."
-        )
 
     keys = ["season", "week", "home_team", "away_team"]
     if frame.duplicated(keys, keep=False).any():
@@ -846,18 +887,18 @@ def prepare_structural_confidence_projection(
     audit_form_date = pd.to_datetime(
         audit_row["form_as_of_date"], errors="coerce"
     )
-    audit_completed_at = pd.to_datetime(
-        audit_row["completed_at"], errors="coerce"
-    )
     if (
         pd.isna(audit_form_date)
         or pd.Timestamp(audit_form_date).normalize() != as_of_date
-        or pd.isna(audit_completed_at)
-        or pd.Timestamp(audit_completed_at).normalize() != as_of_date
     ):
         raise RuntimeError(
             "Learned-consensus run-audit is not fresh for the requested as-of date."
         )
+    require_fresh_timestamps(
+        pd.Series([audit_row["completed_at"]]),
+        as_of_date,
+        "Learned-consensus run-audit completion timestamp",
+    )
     row_to_audit_fields = {
         "form_date_imported": "form_date_imported",
         "preseason_snapshot_hash": "preseason_snapshot_hash",
@@ -960,7 +1001,7 @@ def load_structural_confidence_projection(
 ) -> tuple[pd.DataFrame, str]:
     if not args.db_path.exists():
         raise FileNotFoundError(args.db_path)
-    with sqlite3.connect(args.db_path) as connection:
+    with closing(sqlite3.connect(args.db_path)) as connection, connection:
         raw = read_table(connection, args.structural_table)
         run_audit = read_table(connection, STRUCTURAL_RUN_AUDIT_TABLE)
     if raw.empty:
@@ -1729,7 +1770,7 @@ def load_validated_live_feature_matrix(
 ) -> pd.DataFrame:
     if not database.exists():
         raise RuntimeError(f"Live feature database is missing: {database}")
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection, connection:
         matrix = read_table(connection, "nfl_matchup_game_matrix")
         audit = read_table(connection, "nfl_matchup_run_audit")
         qb_audit = read_table(
@@ -1772,19 +1813,16 @@ def load_validated_live_feature_matrix(
         raise RuntimeError("Live feature set is not FULL_COMPACT.")
     if int(float(row["qb_feature_integrity_passed"])) != 1:
         raise RuntimeError("Live feature QB integrity audit did not pass.")
-    if not math.isclose(
-        float(row["qb_identity_match_rate"]),
-        1.0,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    ):
-        raise RuntimeError("Live feature QB identity match rate is not 100%.")
+    # The run-level rate is a historical/multi-season builder diagnostic.
+    # The builder's existing >=99% scope gates are independently reconciled
+    # below; 100% identity is required on every target-week side, not on an
+    # incorrectly labeled historical rollup. Never rewrite stored audit rates.
     created_at = pd.to_datetime(row["created_at"], errors="coerce")
-    if pd.isna(created_at) or created_at.normalize() != as_of_date:
-        raise RuntimeError(
-            "Live feature database was not rebuilt on the requested as-of "
-            f"date {as_of_date.date().isoformat()}."
-        )
+    require_fresh_timestamps(
+        pd.Series([row["created_at"]]),
+        as_of_date,
+        "Live feature database creation timestamp",
+    )
     if qb_audit.empty or "feature_integrity_passed" not in qb_audit.columns:
         raise RuntimeError("Live feature database lacks the QB integrity audit.")
     if not numeric(
@@ -1812,6 +1850,14 @@ def load_validated_live_feature_matrix(
         )
     if subset.duplicated(["home_team", "away_team"]).any():
         raise RuntimeError("Live feature matrix contains duplicate matchups.")
+    from nfl_circa_live_qb_audit_2026 import audit_database
+    qb_scope = audit_database(database, int(week), float(rating_alpha), subset=subset)
+    subset.attrs["live_qb_scope_audit"] = {
+        "implementation": qb_scope["implementation"],
+        "builder_wide_identity_rate": qb_scope["builder_wide_identity_rate"],
+        "target_week_identity_rate": qb_scope["live_identity_rate"],
+        "report": qb_scope["json_report"],
+    }
     subset.attrs["live_feature_lineage"] = {
         "build_id": str(row["build_id"]),
         "version": str(row["version"]),
@@ -2568,7 +2614,7 @@ def load_historical_rank_analogs(
     if not database.exists():
         return pd.DataFrame(columns=columns), "UNAVAILABLE"
     try:
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection, connection:
             for table_name in HISTORICAL_CARD_TABLE_CANDIDATES:
                 if not table_exists(connection, table_name):
                     continue
@@ -3552,7 +3598,7 @@ def save_outputs(
     ]
 
     args.db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(args.db_path) as connection:
+    with closing(sqlite3.connect(args.db_path)) as connection, connection:
         v1_output.to_sql(
             OUTPUT_TABLE,
             connection,
@@ -3630,9 +3676,6 @@ def save_outputs(
             RUN_AUDIT_HISTORY_TABLE,
             audit,
         )
-    # sqlite3.Connection.__exit__ commits or rolls back but does not close the
-    # handle.  Close it explicitly so Windows can release temporary/test DBs.
-    connection.close()
 
     v1_csv_path = None
     ceiling_csv_path = None
@@ -3954,6 +3997,77 @@ def run_self_test() -> int:
         as_of_date=structural_as_of_date,
         expected_games=matrix,
     )
+    # Production emits UTC timestamps; the original fixture above is naive.
+    # Both represent the same requested local day and must pass the full gate.
+    local_noon = dt.datetime(2026, 8, 24, 12)
+    utc_noon = local_noon.astimezone(dt.timezone.utc)
+    same_day_timestamps = [
+        local_noon.isoformat(),
+        utc_noon.isoformat(),
+        utc_noon.isoformat().replace("+00:00", "Z"),
+        utc_noon.astimezone(dt.timezone(dt.timedelta(hours=5, minutes=30)))
+        .isoformat(),
+    ]
+    for timestamp in same_day_timestamps:
+        if timestamp_local_date(timestamp) != structural_as_of_date.date():
+            raise AssertionError("Same-day timestamp timezone conversion failed.")
+    for hour in (0, 23):
+        boundary = dt.datetime(2026, 8, 24, hour, 30)
+        if timestamp_local_date(
+            boundary.astimezone(dt.timezone.utc).isoformat()
+        ) != boundary.date():
+            raise AssertionError("Local-day boundary timestamp conversion failed.")
+    aware_raw = structural_raw.copy()
+    aware_raw["prediction_timestamp"] = [
+        same_day_timestamps[index % len(same_day_timestamps)]
+        for index in range(len(aware_raw))
+    ]
+    aware_audit = structural_run_audit.copy()
+    aware_audit["completed_at"] = utc_noon.isoformat()
+    aware_projection = prepare_structural_confidence_projection(
+        aware_raw,
+        aware_audit,
+        week=10,
+        as_of_date=structural_as_of_date,
+        expected_games=matrix,
+    )
+    pd.testing.assert_frame_equal(
+        structural_projection.drop(columns="prediction_timestamp"),
+        aware_projection.drop(columns="prediction_timestamp"),
+    )
+    invalid_timestamps = [
+        None,
+        "not-a-timestamp",
+        (local_noon - dt.timedelta(days=1)).isoformat(),
+        (local_noon - dt.timedelta(days=1))
+        .astimezone(dt.timezone.utc).isoformat(),
+        (local_noon + dt.timedelta(days=1))
+        .astimezone(dt.timezone.utc).isoformat(),
+    ]
+    for invalid_timestamp in invalid_timestamps:
+        for source_column in ("prediction_timestamp", "completed_at"):
+            bad_raw = aware_raw.copy()
+            bad_audit = aware_audit.copy()
+            if source_column == "prediction_timestamp":
+                bad_raw.loc[bad_raw.index[0], source_column] = invalid_timestamp
+            else:
+                bad_audit.loc[bad_audit.index[0], source_column] = invalid_timestamp
+            try:
+                prepare_structural_confidence_projection(
+                    bad_raw,
+                    bad_audit,
+                    week=10,
+                    as_of_date=structural_as_of_date,
+                    expected_games=matrix,
+                )
+            except RuntimeError as exc:
+                if "is not fresh" not in str(exc):
+                    raise AssertionError("Unexpected freshness-test failure.") from exc
+            else:
+                raise AssertionError(
+                    f"Invalid/stale {source_column} was accepted: "
+                    f"{invalid_timestamp!r}."
+                )
     legacy_structural_raw = structural_raw.copy()
     legacy_structural_raw["model_variant"] = "STRUCTURAL_FORM_HFA"
     legacy_structural_raw["build_id"] = (

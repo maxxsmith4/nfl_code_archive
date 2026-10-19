@@ -24,7 +24,9 @@ For prediction week W:
 QB identity policy
 ------------------
 Snap-count QB names are resolved to nflverse GSIS passer identifiers through
-an audited first-initial/surname crosswalk.  Ambiguous mappings are fatal, and
+an audited season/team/completed-snapshot crosswalk. Initial/surname labels
+may be shared by different players. Ambiguity inside the required context is
+fatal, and
 recent QB performance follows the player across team changes.  Model fitting
 is blocked unless QB identity coverage, EPA/CPOE coverage, nonzero counts, and
 feature variance all clear explicit integrity thresholds.
@@ -82,6 +84,8 @@ from sklearn.preprocessing import StandardScaler
 
 BUILD_ID = "NFL_WEEKLY_MATCHUP_MARKET_RESIDUAL_CANONICAL_V3"
 VERSION = "v3_qb_gsis_identity_crosswalk_dead_feature_guard"
+# Data-resolution patch; architecture and fitted-bundle compatibility stay unchanged.
+QB_IDENTITY_RESOLUTION_VERSION = "v1_1_team_season_snapshot_gsis"
 
 DEFAULT_PROJECT_ROOT = Path(
     r"C:\Users\maxxs\Downloads\Football Files\nfl_model"
@@ -1345,85 +1349,212 @@ def build_team_week_ratings(
 # =============================================================================
 
 
+class QBIdentityCrosswalk(dict):
+    """Legacy unique-name map plus point-in-time observations for scoped lookups.
+
+    Initial/surname labels are NOT canonical identities. Ambiguous labels are
+    absent from the legacy map and cannot be read without context. Performance
+    still follows the resolved GSIS identifier across team changes.
+    """
+
+    def __init__(self, source: pd.DataFrame, unique_names: dict[str, str],
+                 ambiguous_names: set[str]) -> None:
+        super().__init__(unique_names)
+        self.source = source.copy(deep=True)
+        self.ambiguous_names = frozenset(ambiguous_names)
+        self.resolution_records: list[dict[str, Any]] = []
+        self.by_team_name = {
+            (str(team), str(name)): group.copy()
+            for (team, name), group in self.source.groupby(
+                ["offense_team", "qb_name_match_key"], sort=False
+            )
+        }
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        if key in self.ambiguous_names:
+            raise RuntimeError(
+                f"QB name {key!r} has multiple GSIS IDs. "
+                "Use resolve_qb_identity with season, team, snapshot week and cutoff."
+            )
+        return super().get(key, default)
+
+    def __getitem__(self, key: Any) -> str:
+        if key in self.ambiguous_names:
+            raise RuntimeError(
+                f"QB name {key!r} has multiple GSIS IDs; a name-only lookup is unsafe."
+            )
+        return super().__getitem__(key)
+
+
 def build_qb_identity_crosswalk(
     team_games: pd.DataFrame,
-) -> tuple[dict[str, str], pd.DataFrame]:
-    required = {"primary_qb_key", "primary_qb_name", "offense_team"}
+) -> tuple[QBIdentityCrosswalk, pd.DataFrame]:
+    """Retain every GSIS identity; resolve overlapping abbreviations by context.
+
+    Constructing this index does not choose a QB. Resolution below uses only
+    the requested team's observations available through its last completed
+    snapshot, never the prediction week, future weeks, or a current roster to
+    retroactively relabel historical performance.
+    """
+    required = {"season", "week", "primary_qb_key", "primary_qb_name", "offense_team"}
     missing = sorted(required - set(team_games.columns))
     if missing:
         raise RuntimeError(
             f"Team-game data cannot build the QB identity crosswalk: {missing}"
         )
-
-    source = team_games[
-        ["primary_qb_key", "primary_qb_name", "offense_team"]
-    ].copy()
-    source["primary_qb_key"] = (
-        source["primary_qb_key"].fillna("").astype(str).str.strip()
-    )
-    source["primary_qb_name"] = (
-        source["primary_qb_name"].fillna("").astype(str).str.strip()
-    )
-    source["qb_name_match_key"] = source["primary_qb_name"].map(
-        qb_name_match_key
-    )
-    source = source[
-        source["primary_qb_key"].ne("")
-        & source["qb_name_match_key"].ne("")
-    ].copy()
+    source = team_games[["season", "week", "primary_qb_key", "primary_qb_name", "offense_team"]].copy()
+    for column in ("primary_qb_key", "primary_qb_name"):
+        source[column] = source[column].fillna("").astype(str).str.strip()
+    source["offense_team"] = source["offense_team"].fillna("").map(normalize_team)
+    source["qb_name_match_key"] = source["primary_qb_name"].map(qb_name_match_key)
+    source = source[source.primary_qb_key.ne("") & source.qb_name_match_key.ne("")].copy()
     if source.empty:
         raise RuntimeError("QB identity crosswalk source is empty.")
-    invalid_ids = source[
-        ~source["primary_qb_key"].str.match(r"^00-\d+$", na=False)
-    ]
-    if not invalid_ids.empty:
+    invalid = ~source.primary_qb_key.str.fullmatch(r"00-\d+", na=False)
+    if invalid.any():
         raise RuntimeError(
             "QB identity crosswalk contains non-GSIS passer identifiers:\n"
-            + invalid_ids[
-                ["primary_qb_key", "primary_qb_name", "offense_team"]
-            ].drop_duplicates().head(25).to_string(index=False)
+            + source.loc[invalid, ["primary_qb_key", "primary_qb_name", "offense_team"]]
+            .drop_duplicates().head(25).to_string(index=False)
         )
+    for column in ("season", "week"):
+        values = pd.to_numeric(source[column], errors="coerce")
+        valid = values.notna() & np.isfinite(values) & values.gt(0) & values.eq(np.floor(values))
+        if not valid.all():
+            raise RuntimeError(f"QB identity crosswalk has invalid {column} context.")
+        source[column] = values.astype(int)
+    if source.offense_team.isin({"", "NAN", "NONE", "<NA>"}).any():
+        raise RuntimeError("QB identity crosswalk has missing team context.")
 
-    ambiguity = (
-        source.groupby("qb_name_match_key")["primary_qb_key"]
-        .nunique()
-        .loc[lambda values: values.gt(1)]
-    )
-    if not ambiguity.empty:
-        conflicts = source[
-            source["qb_name_match_key"].isin(ambiguity.index)
-        ].drop_duplicates(
-            ["qb_name_match_key", "primary_qb_key", "primary_qb_name"]
-        )
-        raise RuntimeError(
-            "Ambiguous QB name-to-GSIS mappings detected; refusing to guess:\n"
-            + conflicts.sort_values(
-                ["qb_name_match_key", "primary_qb_key"]
-            ).to_string(index=False)
-        )
-
+    counts = source.groupby("qb_name_match_key").primary_qb_key.nunique()
+    ambiguous = set(counts[counts.gt(1)].index)
     audit = (
-        source.groupby(
-            ["qb_name_match_key", "primary_qb_key"], as_index=False
-        )
+        source.groupby(["qb_name_match_key", "primary_qb_key"], as_index=False)
         .agg(
-            pbp_name_variants=(
-                "primary_qb_name",
-                lambda values: "|".join(sorted(set(map(str, values)))),
-            ),
-            teams_observed=(
-                "offense_team",
-                lambda values: "|".join(sorted(set(map(str, values)))),
-            ),
+            pbp_name_variants=("primary_qb_name", lambda values: "|".join(sorted(set(map(str, values))))),
+            teams_observed=("offense_team", lambda values: "|".join(sorted(set(map(str, values))))),
             team_game_rows=("primary_qb_name", "size"),
         )
         .sort_values(["qb_name_match_key", "primary_qb_key"])
         .reset_index(drop=True)
     )
-    crosswalk = dict(
-        zip(audit["qb_name_match_key"], audit["primary_qb_key"])
+    audit["name_globally_ambiguous"] = audit.qb_name_match_key.isin(ambiguous).astype(int)
+    audit["identity_resolution_version"] = QB_IDENTITY_RESOLUTION_VERSION
+    contexts = {}
+    for (name, player_id), group in source.groupby(["qb_name_match_key", "primary_qb_key"]):
+        rows = group[["season", "week", "offense_team"]].drop_duplicates().sort_values(
+            ["season", "week", "offense_team"]
+        )
+        contexts[(name, player_id)] = json.dumps(rows.to_dict("records"), sort_keys=True)
+    audit["source_contexts_json"] = [
+        contexts[(row.qb_name_match_key, row.primary_qb_key)] for row in audit.itertuples()
+    ]
+    unique = audit[audit.name_globally_ambiguous.eq(0)]
+    crosswalk = QBIdentityCrosswalk(
+        source, dict(zip(unique.qb_name_match_key, unique.primary_qb_key)), ambiguous
     )
+    if ambiguous:
+        print(
+            "[QB_IDENTITY] Shared abbreviated names require scoped lookup: "
+            + ", ".join(sorted(ambiguous))
+            + f" | policy={QB_IDENTITY_RESOLUTION_VERSION}", flush=True
+        )
     return crosswalk, audit
+
+
+def resolve_qb_identity(
+    crosswalk: QBIdentityCrosswalk, *, qb_name: str, team: str,
+    target_season: int, prediction_week: int, snapshot_week: int,
+) -> str:
+    """Resolve a snap QB against matching, prior-only PBP team/game evidence.
+
+    First use the matching season/team/snapshot week/name observation. When
+    that exact name is absent from the primary-passer row (snap and dropback
+    leaders can differ), allow a unique identity previously observed under the
+    same name on the same team IN THAT SEASON. Never select an ID from another
+    team's name match, the prediction week, or a future observation. Two IDs
+    remaining in the required scope are an error, not a first/last-row choice.
+    """
+    if not isinstance(crosswalk, QBIdentityCrosswalk):
+        raise RuntimeError("QB identity resolution requires the scoped crosswalk; update both callers.")
+    def integer(value: Any, label: str) -> int:
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid QB identity {label}: {value!r}") from exc
+        if not np.isfinite(number) or number != int(number) or number <= 0:
+            raise RuntimeError(f"Invalid QB identity {label}: {value!r}")
+        return int(number)
+    season = integer(target_season, "season")
+    cutoff = integer(prediction_week, "prediction week")
+    observed_week = integer(snapshot_week, "snapshot week")
+    if observed_week >= cutoff:
+        raise RuntimeError(
+            f"QB identity lookahead blocked: snapshot Week {observed_week} "
+            f"must precede prediction Week {cutoff}."
+        )
+    selected_team = normalize_team(team)
+    name = qb_name_match_key(qb_name)
+    if not selected_team or selected_team in {"NAN", "NONE", "<NA>"} or not name:
+        raise RuntimeError("QB identity lookup requires a nonempty name and team.")
+    record = {
+        "team": selected_team, "season": season, "prediction_week": cutoff,
+        "snapshot_week": observed_week, "snap_qb_name": str(qb_name),
+        "qb_name_match_key": name, "primary_qb_key": "", "match_method": "UNMATCHED",
+        "identity_resolution_version": QB_IDENTITY_RESOLUTION_VERSION,
+    }
+    observations = crosswalk.by_team_name.get((selected_team, name))
+    if observations is None:
+        crosswalk.resolution_records.append(record)
+        return ""
+    prior = observations[
+        observations.season.eq(season) & observations.week.le(observed_week)
+        & observations.week.lt(cutoff)
+    ]
+    exact = prior[prior.week.eq(observed_week)]
+    candidates = exact if not exact.empty else prior
+    ids = sorted(set(candidates.primary_qb_key))
+    if len(ids) > 1:
+        details = candidates[["season", "week", "offense_team", "primary_qb_name", "primary_qb_key"]].drop_duplicates()
+        raise RuntimeError(
+            f"Ambiguous QB identity IN REQUIRED CONTEXT: {selected_team}, season {season}, "
+            f"snapshot Week {observed_week}, prediction Week {cutoff}, name={qb_name!r}; "
+            f"candidate GSIS IDs={ids}. No identity selected.\n"
+            + details.sort_values(["week", "primary_qb_key"]).to_string(index=False)
+        )
+    if not ids:
+        crosswalk.resolution_records.append(record)
+        return ""
+    resolved = ids[0]
+    record["primary_qb_key"] = resolved
+    record["match_method"] = "EXACT_TEAM_SEASON_SNAPSHOT" if not exact.empty else "UNIQUE_PRIOR_TEAM_SEASON"
+    record["evidence_weeks"] = sorted(set(map(int, candidates.week)))
+    crosswalk.resolution_records.append(record)
+    if name in crosswalk.ambiguous_names:
+        print(
+            f"[QB_IDENTITY] RESOLVED {selected_team} {qb_name} -> {resolved} "
+            f"| season={season} | snapshot_week={observed_week} "
+            f"| prediction_week={cutoff} | method={record['match_method']}", flush=True
+        )
+    return resolved
+
+
+def finalize_qb_identity_audit(
+    crosswalk: QBIdentityCrosswalk, audit: pd.DataFrame,
+) -> pd.DataFrame:
+    """Append actual caller contexts without changing existing source counts."""
+    result = audit.copy(deep=True)
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for record in crosswalk.resolution_records:
+        grouped.setdefault((record["qb_name_match_key"], record["primary_qb_key"]), []).append(record)
+    result["resolved_lookup_count"] = [
+        len(grouped.get((row.qb_name_match_key, row.primary_qb_key), [])) for row in result.itertuples()
+    ]
+    result["resolution_contexts_json"] = [
+        json.dumps(grouped.get((row.qb_name_match_key, row.primary_qb_key), []), sort_keys=True)
+        for row in result.itertuples()
+    ]
+    return result
 
 
 def share_dictionary(snapshot: pd.DataFrame, snap_column: str) -> dict[str, float]:
@@ -1632,9 +1763,10 @@ def build_weekly_personnel_features(
                 current_qb_identity_key = qb_name_match_key(
                     current["qb_name"]
                 )
-                current_qb_pbp_key = qb_crosswalk.get(
-                    current_qb_identity_key,
-                    "",
+                current_qb_pbp_key = resolve_qb_identity(
+                    qb_crosswalk, qb_name=current["qb_name"], team=team,
+                    target_season=season, prediction_week=prediction_week,
+                    snapshot_week=int(current["week"]),
                 )
 
                 current_qb_epa, current_qb_cpoe, current_qb_games = (
@@ -1709,7 +1841,7 @@ def build_weekly_personnel_features(
     personnel = personnel.sort_values(
         ["season", "prediction_week", "team"]
     ).reset_index(drop=True)
-    return personnel, qb_crosswalk_audit
+    return personnel, finalize_qb_identity_audit(qb_crosswalk, qb_crosswalk_audit)
 
 
 # =============================================================================
